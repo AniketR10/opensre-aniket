@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from app.integrations.config_models import CoralogixIntegrationConfig
+from app.integrations.models import CoralogixIntegrationConfig
 from app.services.coralogix.client import (
     CoralogixClient,
     build_coralogix_logs_query,
@@ -75,8 +75,8 @@ def test_query_logs_success_parses_ndjson_rows(client: CoralogixClient) -> None:
 
     with patch("app.services.coralogix.client.httpx.post", return_value=mock_response) as mock_post:
         result = client.query_logs("source logs")
+        mock_post.assert_called_once()
 
-    mock_post.assert_called_once()
     assert result["success"] is True
     assert result["total"] == 1
     assert result["logs"][0]["message"] == "boom"
@@ -214,4 +214,25 @@ def test_build_coralogix_logs_query_appends_limit_clause() -> None:
 
     assert result.startswith("source logs")
     assert "filter $l.applicationname == 'opensre'" in result
+    assert result.endswith("limit 5")
+
+
+def test_build_coralogix_logs_query_raw_query_passthrough_appends_limit() -> None:
+    result = build_coralogix_logs_query(
+        raw_query="source logs | filter foo == 'bar'",
+        application_name="ignored",
+        subsystem_name="ignored",
+        limit=10,
+    )
+
+    assert result == "source logs | filter foo == 'bar' | limit 10"
+    assert "applicationname" not in result
+    assert "subsystemname" not in result
+
+
+def test_build_coralogix_logs_query_subsystem_name_filter() -> None:
+    result = build_coralogix_logs_query(subsystem_name="api-gateway", limit=5)
+
+    assert result.startswith("source logs")
+    assert "filter $l.subsystemname == 'api-gateway'" in result
     assert result.endswith("limit 5")
