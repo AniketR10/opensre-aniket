@@ -891,16 +891,6 @@ class TestCompactCommand:
         assert "compacted" in buf.getvalue()
 
 
-class TestStopCommand:
-    def test_prints_stop_hints(self) -> None:
-        console, buf = _capture()
-        dispatch_slash("/stop", ReplSession(), console)
-        out = buf.getvalue()
-        assert "Ctrl+C" in out
-        assert "/tasks" in out
-        assert "/cancel" in out
-
-
 class TestCancelCommand:
     def test_usage_without_task_id(self) -> None:
         console, buf = _capture()

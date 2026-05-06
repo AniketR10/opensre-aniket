@@ -144,6 +144,21 @@ class TestSlashTaskCommands:
         assert "cancellation" in out.lower()
         assert "Ctrl+C" in out
 
+    def test_cancel_running_synthetic_signals_and_terminates_process(self) -> None:
+        session = ReplSession()
+        t = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
+        t.mark_running()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        t.attach_process(proc)
+        console, buf = _capture()
+        dispatch_slash(f"/cancel {t.task_id}", session, console)
+        assert t.cancel_requested.is_set()
+        proc.terminate.assert_called_once()
+        out = buf.getvalue()
+        assert "stop requested" in out.lower()
+        assert t.task_id in out
+
 
 class _ImmediateThread:
     """Run ``target`` synchronously inside ``start()`` (for deterministic tests)."""

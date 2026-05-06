@@ -1,4 +1,4 @@
-"""Slash commands: /history, /tasks, /cancel, /stop."""
+"""Slash commands: /history, /tasks, /cancel."""
 
 from __future__ import annotations
 
@@ -127,15 +127,6 @@ def _cmd_cancel(session: ReplSession, console: Console, args: list[str]) -> bool
     return True
 
 
-def _cmd_stop(session: ReplSession, console: Console, args: list[str]) -> bool:  # noqa: ARG001
-    console.print(
-        "[dim]in-flight work: press[/dim] [bold]Ctrl+C[/bold] "
-        "[dim]during a streaming investigation, or run[/dim] [bold]/tasks[/bold] "
-        "[dim]then[/dim] [bold]/cancel <id>[/bold] [dim]for background tasks.[/dim]"
-    )
-    return True
-
-
 COMMANDS: list[SlashCommand] = [
     SlashCommand("/history", "show persisted command history", _cmd_history),
     SlashCommand("/tasks", "list recent and in-flight shell tasks", _cmd_tasks),
@@ -143,11 +134,6 @@ COMMANDS: list[SlashCommand] = [
         "/cancel",
         "cancel a running task by id ('/cancel <task_id>' — see /tasks)",
         _cmd_cancel,
-    ),
-    SlashCommand(
-        "/stop",
-        "hints for stopping in-flight investigations and background tasks",
-        _cmd_stop,
     ),
 ]
 
