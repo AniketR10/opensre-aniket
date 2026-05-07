@@ -80,7 +80,7 @@ def _render_art() -> str:
         # Reject if it won't fit in 80 columns.
         if rendered and all(len(ln) <= 78 for ln in rendered.splitlines()):
             return rendered
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return _FALLBACK_ART
 
@@ -129,7 +129,7 @@ def _is_first_run() -> bool:
         from app.cli.wizard.store import get_store_path
 
         return not get_store_path().exists()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
