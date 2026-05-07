@@ -123,6 +123,7 @@ def post_json(
         if isinstance(parsed, dict):
             data = parsed
     except Exception:
+        # non-JSON body is permitted; fall through with empty data
         pass
 
     return DeliveryResponse(
