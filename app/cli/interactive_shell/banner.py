@@ -81,6 +81,7 @@ def _render_art() -> str:
         if rendered and all(len(ln) <= 78 for ln in rendered.splitlines()):
             return rendered
     except Exception:
+        # pyfiglet missing or font lookup failed — fall through to ASCII art
         pass
     return _FALLBACK_ART
 
