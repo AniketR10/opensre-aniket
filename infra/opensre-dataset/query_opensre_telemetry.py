@@ -33,6 +33,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -111,27 +112,25 @@ def _cmd_raw(root: Path, rel_path: str, limit: int) -> None:
     print(json.dumps({"file": rel_path, "rows": rows}, indent=2))
 
 
-def _cmd_metrics(root: Path, contains: str) -> None:
+def _csv_backend(root: Path) -> Any:
+    """Lazy-construct the CSV Grafana backend after ``sys.path`` is set up."""
     from app.integrations.opensre.csv_grafana_backend import OpenSRECsvGrafanaBackend
 
-    be = OpenSRECsvGrafanaBackend(telemetry_dir=root, alert_fixture={})
-    out = be.query_timeseries(query=contains or "")
+    return OpenSRECsvGrafanaBackend(telemetry_dir=root, alert_fixture={})
+
+
+def _cmd_metrics(root: Path, contains: str) -> None:
+    out = _csv_backend(root).query_timeseries(query=contains or "")
     print(json.dumps(out, indent=2, default=str))
 
 
 def _cmd_logs(root: Path, service: str) -> None:
-    from app.integrations.opensre.csv_grafana_backend import OpenSRECsvGrafanaBackend
-
-    be = OpenSRECsvGrafanaBackend(telemetry_dir=root, alert_fixture={})
-    out = be.query_logs(service_name=service or "")
+    out = _csv_backend(root).query_logs(service_name=service or "")
     print(json.dumps(out, indent=2, default=str))
 
 
 def _cmd_traces(root: Path, service: str) -> None:
-    from app.integrations.opensre.csv_grafana_backend import OpenSRECsvGrafanaBackend
-
-    be = OpenSRECsvGrafanaBackend(telemetry_dir=root, alert_fixture={})
-    out = be.query_traces(service_name=service or "")
+    out = _csv_backend(root).query_traces(service_name=service or "")
     print(json.dumps(out, indent=2, default=str))
 
 
