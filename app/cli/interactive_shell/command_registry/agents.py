@@ -90,11 +90,12 @@ def _format_bus_message(msg: BusMessage) -> str:
 
 
 def _cmd_agents_bus(console: Console) -> bool:
-    """Live-tail the cross-agent context bus until ``Ctrl-C``.
+    """Live-tail the cross-agent context bus until ``Ctrl-C`` or broker exit.
 
     Self-elects a broker if none is running, then streams each ``BusMessage``
-    as it arrives. ``KeyboardInterrupt`` is the only documented way to exit
-    and returns to the REPL prompt without raising.
+    as it arrives. The loop ends in three ways, each with explicit feedback:
+    ``KeyboardInterrupt`` (user detached), broker disconnect (e.g. the
+    publishing process exited), or socket error.
     """
     console.print(
         f"[{DIM}]tailing /agents bus — Ctrl-C to exit[/]",
@@ -104,9 +105,14 @@ def _cmd_agents_bus(console: Console) -> bool:
             console.print(_format_bus_message(msg))
     except KeyboardInterrupt:
         console.print(f"[{DIM}](detached)[/]")
+        return True
     except OSError as exc:
         console.print(f"[{ERROR}]bus error:[/] {escape(str(exc))}")
         return False
+    # ``subscribe()`` returned cleanly — the broker closed our connection
+    # (e.g. it stopped, or its host process exited). Surface that explicitly
+    # so the user isn't left wondering why the prompt came back.
+    console.print(f"[{DIM}]bus broker disconnected[/]")
     return True
 
 

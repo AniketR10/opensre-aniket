@@ -41,9 +41,19 @@ def isolated_brokers(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _drain_subscriber(
-    sock_path: Path, into: queue.Queue[BusMessage], stop_after: int = 1
+    sock_path: Path,
+    into: queue.Queue[BusMessage],
+    stop_after: int = 1,
+    *,
+    attach_timeout: float = 3.0,
 ) -> threading.Thread:
-    """Spawn a daemon thread that puts up to ``stop_after`` messages into ``into``."""
+    """Spawn a daemon subscriber and block until it has attached to the broker.
+
+    Avoids the flaky ``time.sleep(0.15)`` pattern: we busy-poll the broker's
+    in-memory subscriber set until it ticks up by exactly one. Works because
+    our process is the broker for the test path (the autouse fixture clears
+    the broker registry, so ``subscribe()`` self-elects on first attach).
+    """
 
     def _loop() -> None:
         for count, msg in enumerate(subscribe(path=sock_path), start=1):
@@ -51,11 +61,23 @@ def _drain_subscriber(
             if count >= stop_after:
                 return
 
+    # Snapshot the pre-attach subscriber count so we don't race against
+    # subscribers spawned by other helpers in the same test.
+    broker_before = bus_module._brokers.get(sock_path)
+    before = len(broker_before._subscribers) if broker_before is not None else 0
+
     thread = threading.Thread(target=_loop, daemon=True)
     thread.start()
-    # Give the subscriber a moment to bind/connect before tests publish.
-    time.sleep(0.15)
-    return thread
+
+    deadline = time.monotonic() + attach_timeout
+    while time.monotonic() < deadline:
+        broker = bus_module._brokers.get(sock_path)
+        if broker is not None:
+            with broker._lock:
+                if len(broker._subscribers) > before:
+                    return thread
+        time.sleep(0.005)
+    raise AssertionError(f"_drain_subscriber: subscriber did not attach within {attach_timeout}s")
 
 
 class TestBusMessage:
