@@ -13,6 +13,7 @@ attach as plain clients. If the broker dies, the next operation re-elects.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -176,7 +177,14 @@ def _unlink_stale(path: Path) -> None:
 
 
 def _write_pid_file_atomic(path: Path, pid: int) -> None:
-    """Write ``pid`` to the sidecar atomically (tmpfile + rename)."""
+    """Write ``pid`` to the sidecar atomically (tmpfile + rename).
+
+    Raises ``OSError`` on failure. Callers (i.e. ``BusServer.start``) must
+    treat a missing PID file as a hard error: in multi-process operation,
+    ``_socket_is_live`` reads the sidecar, and silently swallowing a write
+    failure would let peers see the broker as dead, ``_unlink_stale`` its
+    socket file out from under it, and silently split the bus.
+    """
     pid_path = _pid_file_for(path)
     tmp = pid_path.with_name(pid_path.name + ".tmp")
     try:
@@ -187,9 +195,7 @@ def _write_pid_file_atomic(path: Path, pid: int) -> None:
     except OSError:
         with suppress(FileNotFoundError, OSError):
             os.unlink(tmp)
-        # PID file is best-effort: bus still works without it, ``_socket_is_live``
-        # just falls back to "not live" and a peer might re-elect.
-        logger.warning("failed to write bus pid file at %s", pid_path)
+        raise
 
 
 class BusServer:
@@ -219,7 +225,13 @@ class BusServer:
         return self._running.is_set()
 
     def start(self) -> None:
-        """Bind the socket and spawn the accept loop. Raises ``OSError`` on bind failure."""
+        """Bind the socket, write the PID sidecar, and spawn the accept loop.
+
+        Raises ``OSError`` on bind failure or on PID-file write failure (the
+        sidecar is required for correct multi-process liveness; see
+        ``_write_pid_file_atomic``). Any partial state is rolled back so a
+        half-started broker never persists.
+        """
         if self._running.is_set():
             return
         _ensure_parent_dir(self._path)
@@ -232,12 +244,24 @@ class BusServer:
         with suppress(OSError):
             os.chmod(self._path, 0o600)
         listener.listen(16)
-        self._listener = listener
-        self._running.set()
         # Publish our PID via the sidecar so peers can answer "is the broker
         # live?" without making a real connection (which would otherwise spawn
-        # a short-lived phantom subscriber on every probe).
-        _write_pid_file_atomic(self._path, os.getpid())
+        # a short-lived phantom subscriber on every probe). If this fails we
+        # tear the bind down so a peer doesn't ``_unlink_stale`` our orphaned
+        # socket file out from under us — ``_socket_is_live`` reads the
+        # sidecar, and a missing one would silently split the bus.
+        try:
+            _write_pid_file_atomic(self._path, os.getpid())
+        except OSError:
+            with suppress(OSError):
+                listener.shutdown(socket.SHUT_RDWR)
+            with suppress(OSError):
+                listener.close()
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(self._path)
+            raise
+        self._listener = listener
+        self._running.set()
         self._accept_thread = threading.Thread(
             target=self._accept_loop,
             name="agents-bus-accept",
@@ -335,6 +359,9 @@ _broker_lock = threading.Lock()
 _brokers: dict[Path, BusServer] = {}
 
 
+_BIND_RACE_ERRNOS: frozenset[int] = frozenset({errno.EADDRINUSE, errno.EEXIST})
+
+
 def _ensure_broker(path: Path) -> BusServer | None:
     """Elect a broker for ``path`` if none is live, else return ``None``.
 
@@ -342,6 +369,12 @@ def _ensure_broker(path: Path) -> BusServer | None:
     existing instance. If another process owns it, returns ``None`` (the caller
     should connect as a client). If a stale socket file exists, unlinks it and
     retries the bind.
+
+    A lost bind race (``EADDRINUSE`` / ``EEXIST``) is converted to ``None``
+    because that just means a peer beat us to the elect. Any other ``OSError``
+    from ``start()`` (e.g. PID-file write failure, parent-dir creation failure)
+    is propagated — those are real errors users need to see, not bus splits to
+    paper over silently.
     """
     with _broker_lock:
         existing = _brokers.get(path)
@@ -349,14 +382,14 @@ def _ensure_broker(path: Path) -> BusServer | None:
             return existing
         if _socket_is_live(path):
             return None
-        # Path either doesn't exist or is stale. Unlink any leftover and try to bind.
         _unlink_stale(path)
         server = BusServer(path)
         try:
             server.start()
-        except OSError:
-            # Lost the race to another process between liveness check and bind.
-            return None
+        except OSError as exc:
+            if exc.errno in _BIND_RACE_ERRNOS:
+                return None
+            raise
         _brokers[path] = server
         return server
 

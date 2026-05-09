@@ -150,6 +150,40 @@ class TestBusServerLifecycle:
             server.stop()
         assert not _pid_file_for(sock_path).exists()
 
+    def test_start_rolls_back_when_pid_file_write_fails(
+        self, sock_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Simulate ENOSPC / EACCES during the PID-file write. ``start`` must
+        # raise *and* leave no orphaned socket file behind — otherwise peers
+        # would see a path with no live listener via ``_socket_is_live``,
+        # ``_unlink_stale`` it, and silently split the bus.
+        def _boom_enospc(*args: object) -> None:
+            del args
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(bus_module, "_write_pid_file_atomic", _boom_enospc)
+
+        server = BusServer(sock_path)
+        with pytest.raises(OSError):
+            server.start()
+        assert not sock_path.exists()
+        assert not _pid_file_for(sock_path).exists()
+        assert not server.is_running
+
+    def test_ensure_broker_propagates_pid_write_failure(
+        self, sock_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``_ensure_broker`` swallows EADDRINUSE/EEXIST as a lost bind race,
+        # but real failures (disk full, permission denied) must propagate so
+        # callers see the error instead of silently splitting the bus.
+        def _boom_eacces(*args: object) -> None:
+            del args
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(bus_module, "_write_pid_file_atomic", _boom_eacces)
+        with pytest.raises(OSError):
+            bus_module._ensure_broker(sock_path)
+
 
 class TestLivenessProbe:
     def test_socket_is_live_does_not_create_phantom_subscriber(self, sock_path: Path) -> None:
