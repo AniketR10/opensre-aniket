@@ -30,8 +30,14 @@ def sock_path(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def isolated_brokers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure each test starts with an empty broker registry, no cross-test bleed."""
+    """Ensure each test starts with empty broker + publisher caches.
+
+    Without this, the publisher socket cached from a prior test would point at
+    a now-stopped broker's socket path, and the first ``publish()`` of the
+    next test would silently sendall onto a dead fd.
+    """
     monkeypatch.setattr(bus_module, "_brokers", {})
+    monkeypatch.setattr(bus_module, "_publishers", {})
 
 
 def _drain_subscriber(
@@ -214,6 +220,101 @@ class TestLivenessProbe:
         assert not _socket_is_live(sock_path)
 
 
+class TestPublisherCache:
+    def test_burst_of_publishes_reuses_one_connection(self, sock_path: Path) -> None:
+        # Each publish() previously opened a fresh UDS connection, which the
+        # broker accepted, registered as a subscriber, and ran a per-connection
+        # reader thread for. A burst of N publishes spawned N short-lived
+        # threads. With the cache, all publishes from one process share one
+        # persistent connection and one persistent broker reader thread.
+        received: queue.Queue[BusMessage] = queue.Queue()
+        _drain_subscriber(sock_path, received, stop_after=20)
+
+        for i in range(20):
+            publish(BusMessage(agent="a:1", topic="finding", summary=f"n{i}"), path=sock_path)
+
+        # All frames arrive in order.
+        for i in range(20):
+            msg = received.get(timeout=2.0)
+            assert msg.summary == f"n{i}"
+
+        # Exactly one cached publisher socket for our process.
+        assert len(bus_module._publishers) == 1
+        cached = next(iter(bus_module._publishers.values()))
+        assert cached.sock.fileno() >= 0
+
+        # Broker side: at most one publisher-origin connection (plus the one
+        # subscriber drain). Check by counting connections opened by us. The
+        # broker only sees what we sent it; if reuse is working, every publish
+        # came from the same socket and the broker registered exactly one
+        # publisher connection for the burst.
+        broker = bus_module._brokers[sock_path]
+        with broker._lock:
+            # 1 subscriber (the drain thread above) + 1 cached publisher = 2.
+            # If the cache were broken we'd see many transient connections,
+            # but most would have closed by now — so this is a weak check;
+            # the strong check is len(bus_module._publishers) == 1 above.
+            assert len(broker._subscribers) <= 2
+
+    def test_reconnects_after_cached_socket_breaks(self, sock_path: Path) -> None:
+        received: queue.Queue[BusMessage] = queue.Queue()
+        _drain_subscriber(sock_path, received, stop_after=2)
+
+        publish(BusMessage(agent="a:1", topic="finding", summary="first"), path=sock_path)
+        msg1 = received.get(timeout=2.0)
+        assert msg1.summary == "first"
+
+        # Forcibly break the cached publisher connection.
+        broken_cached = next(iter(bus_module._publishers.values()))
+        broken_sock = broken_cached.sock
+        broken_sock.close()
+
+        # Next publish must transparently reconnect (one retry on OSError).
+        publish(BusMessage(agent="a:1", topic="finding", summary="second"), path=sock_path)
+        msg2 = received.get(timeout=2.0)
+        assert msg2.summary == "second"
+
+        # The cache now holds a fresh socket object (the OS may recycle the
+        # underlying fd number, so compare object identity, not fileno()).
+        new_cached = next(iter(bus_module._publishers.values()))
+        assert new_cached.sock is not broken_sock
+
+    def test_concurrent_publishes_do_not_interleave_frames(self, sock_path: Path) -> None:
+        # If the per-socket send_lock weren't held around sendall(), concurrent
+        # publishes from different threads could interleave bytes mid-frame,
+        # corrupting the JSONL stream.
+        n_threads = 10
+        per_thread = 5
+        total = n_threads * per_thread
+
+        received: queue.Queue[BusMessage] = queue.Queue()
+        _drain_subscriber(sock_path, received, stop_after=total)
+
+        def _spam(tid: int) -> None:
+            for i in range(per_thread):
+                publish(
+                    BusMessage(
+                        agent=f"t{tid}:1",
+                        topic="finding",
+                        summary=f"t{tid}-n{i}",
+                    ),
+                    path=sock_path,
+                )
+
+        threads = [threading.Thread(target=_spam, args=(t,)) for t in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        # Every frame must be parseable (no byte interleaving) and unique.
+        seen: set[str] = set()
+        for _ in range(total):
+            msg = received.get(timeout=5.0)
+            seen.add(msg.summary)
+        assert len(seen) == total, f"frame loss or corruption: got {len(seen)} unique of {total}"
+
+
 class TestPublishSubscribe:
     def test_round_trip_one_publisher_one_subscriber(self, sock_path: Path) -> None:
         received: queue.Queue[BusMessage] = queue.Queue()
@@ -279,6 +380,98 @@ class TestPublishSubscribe:
 
         msg = received.get(timeout=2.0)
         assert msg.summary == "ok"
+
+    def test_unresponsive_subscriber_does_not_stall_broadcast(
+        self, sock_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If one subscriber's recv buffer fills, ``sendall`` on a blocking UDS
+        # would wedge indefinitely with no exception, freezing fan-out for
+        # every publisher. Verify the write-readiness gate evicts the slow
+        # subscriber and lets healthy ones keep receiving.
+        monkeypatch.setattr(bus_module, "_BROADCAST_WRITE_TIMEOUT_SECONDS", 0.05)
+
+        server = BusServer(sock_path)
+        server.start()
+        slow: socket.socket | None = None
+        try:
+            # Healthy subscriber: drains until it sees the "alive" sentinel.
+            seen_alive = threading.Event()
+
+            def _healthy_drain() -> None:
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                client.connect(str(sock_path))
+                client.settimeout(3.0)
+                buf = b""
+                try:
+                    while not seen_alive.is_set():
+                        chunk = client.recv(8192)
+                        if not chunk:
+                            return
+                        buf += chunk
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            if not line:
+                                continue
+                            try:
+                                msg = BusMessage.from_jsonl(line)
+                            except (ValueError, KeyError, TypeError):
+                                continue
+                            if msg.summary == "alive":
+                                seen_alive.set()
+                                return
+                except OSError:
+                    return
+                finally:
+                    client.close()
+
+            t = threading.Thread(target=_healthy_drain, daemon=True)
+            t.start()
+            # Slow subscriber: shrink recv buffer so it fills fast, never reads.
+            slow = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            slow.connect(str(sock_path))
+
+            # Wait for both to attach.
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                with server._lock:
+                    if len(server._subscribers) >= 2:
+                        break
+                time.sleep(0.02)
+
+            # Pump enough large frames to fill ``slow``'s tiny recv buffer.
+            for _ in range(8):
+                publish(
+                    BusMessage(agent="a:1", topic="finding", summary="x" * 4000),
+                    path=sock_path,
+                )
+
+            # Final small frame. Healthy subscriber must receive it — that
+            # proves the broker did not stall behind the wedged ``slow``.
+            publish(BusMessage(agent="a:1", topic="finding", summary="alive"), path=sock_path)
+
+            assert seen_alive.wait(timeout=3.0), (
+                "broker stalled: healthy subscriber never received the post-fill frame"
+            )
+
+            # Slow subscriber should have been evicted from the fan-out set.
+            deadline = time.time() + 1.0
+            slow_fd = slow.fileno()
+            while time.time() < deadline:
+                with server._lock:
+                    still_attached = any(s.fileno() == slow_fd for s in server._subscribers)
+                if not still_attached:
+                    break
+                time.sleep(0.05)
+            with server._lock:
+                attached_fds = {s.fileno() for s in server._subscribers}
+            assert slow_fd not in attached_fds, (
+                "unresponsive subscriber was not evicted from fan-out set"
+            )
+        finally:
+            if slow is not None:
+                slow.close()
+            server.stop()
 
     def test_subscriber_disconnects_on_oversized_unterminated_stream(self, sock_path: Path) -> None:
         # Simulate a hostile broker that wins the bind race and streams unlimited
