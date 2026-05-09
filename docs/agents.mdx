@@ -1,0 +1,134 @@
+---
+title: 'Local Agent Fleet'
+description: 'Slash-command surface for monitoring, coordinating, and exchanging context between local AI agents (Claude Code, Cursor, Aider, ...)'
+---
+
+## Overview
+
+OpenSRE treats every other AI agent running on your machine — Claude Code,
+Cursor, Aider, Codex CLI, Gemini, and friends — as a microservice and applies
+normal SRE practice: golden signals, SLOs, and incident response. The whole
+fleet view lives behind one slash command in the interactive shell:
+
+```text
+> /agents
+```
+
+Subcommands drill into specific surfaces. This page documents the cross-agent
+**context bus** behind `/agents bus`.
+
+## `/agents bus` — shared context channel
+
+The bus is an opt-in, local-only pub/sub channel that carries findings between
+agents. One agent publishes a finding (e.g. *"the auth bug is in
+`services/auth.py:42`"*) and every attached subscriber sees it live. The
+inspector is the REPL itself:
+
+```text
+> /agents bus
+tailing /agents bus — Ctrl-C to exit
+[claude-code:8421] services/auth.py:42 — null deref on missing token
+[cursor:9133] services/auth.py:42 — confirmed, repro on commit abc123
+^C
+(detached)
+>
+```
+
+Ctrl-C returns to the prompt. Messages already published are not replayed to
+late subscribers — the bus is **live-only** in v1.
+
+### Transport
+
+- **Socket**: Unix-domain stream socket at `~/.config/opensre/agents-bus.sock`.
+- **Permissions**: `0600` — only the user who started the broker can read or
+  write it.
+- **Wire format**: JSON Lines (one JSON object per `\n`-terminated frame).
+- **Topology**: self-electing broker. The first `publish()` or `subscribe()`
+  call that finds no live socket binds it and runs an in-process daemon thread
+  that fans frames out. Other processes attach as plain clients. If the broker
+  dies, the next operation re-elects — agents can publish and subscribe even
+  when OpenSRE itself is not running.
+
+### Message schema
+
+The wire payload mirrors the shape of `evidence` records in
+`app/state/agent_state.py` so a finding can later be lifted into an
+investigation without renaming fields.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `agent` | string | yes | `"<name>:<pid>"`, e.g. `"claude-code:8421"`. Same convention as `WriteEvent.agent`. |
+| `topic` | string | yes | `"finding"` is the canonical value; other topics are reserved for future phases. |
+| `summary` | string | yes | One-line human-readable description. |
+| `source` | string | no | One of the `EvidenceSource` literals (`github`, `datadog`, ...) or free-form. |
+| `path` | string | no | `"file.py:42"` style location. Optional. |
+| `data` | object | no | Free-form payload. Default `{}`. |
+| `id` | string | no | UUID. Generated if omitted. |
+| `timestamp` | string | no | ISO-8601 UTC. Generated if omitted. |
+| `schema_version` | int | no | Currently `1`. |
+
+Example frame on the wire (single line, broken here for readability):
+
+```json
+{
+  "agent": "claude-code:8421",
+  "topic": "finding",
+  "summary": "null deref on missing token",
+  "source": "github",
+  "path": "services/auth.py:42",
+  "data": {"commit": "abc123"},
+  "id": "f4c4...",
+  "timestamp": "2026-05-09T15:04:42+00:00",
+  "schema_version": 1
+}
+```
+
+### Publishing from another agent
+
+Any process that can speak Unix-domain sockets can publish. The simplest path
+is to import the helper:
+
+```python
+from app.agents import BusMessage, publish
+
+publish(BusMessage(
+    agent="claude-code:8421",
+    topic="finding",
+    summary="null deref on missing token",
+    source="github",
+    path="services/auth.py:42",
+    data={"commit": "abc123"},
+))
+```
+
+Publishers without a Python dependency on OpenSRE can connect directly:
+
+```bash
+python - <<'EOF'
+import json, os, socket, uuid, datetime
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect(os.path.expanduser("~/.config/opensre/agents-bus.sock"))
+sock.sendall((json.dumps({
+    "agent": "claude-code:8421",
+    "topic": "finding",
+    "summary": "null deref on missing token",
+    "path": "services/auth.py:42",
+    "id": str(uuid.uuid4()),
+    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+    "schema_version": 1,
+}) + "\n").encode())
+sock.close()
+EOF
+```
+
+### Limits and trust boundary
+
+- **Local-only.** The bus never leaves the machine. The socket has no network
+  binding.
+- **No auth beyond filesystem perms.** Any process running as your user can
+  publish or subscribe. Treat the bus as roughly equivalent to a shared file
+  in `~/.config/opensre/`.
+- **Frame cap.** Frames over 64 KiB are dropped with a warning — a finding
+  payload that big is almost certainly a bug.
+- **No replay buffer.** Subscribers see only what is published *after* they
+  attach. A persistent ring buffer is a candidate for a follow-up phase.
