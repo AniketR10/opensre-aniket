@@ -88,11 +88,18 @@ class TestBusMessage:
 
     def test_is_not_hashable(self) -> None:
         # ``data`` is a mapping, so a value hash would be misleading and would
-        # fail at call time on the auto-generated ``__hash__``. Disable it
-        # explicitly so callers see the unhashability up front.
+        # fail at call time on the auto-generated ``__hash__``. We disable it
+        # explicitly. Assert the contract directly (``__hash__ is None``)
+        # rather than triggering ``hash()`` — the latter trips static
+        # analysers that statically see the unhashability.
+        assert BusMessage.__hash__ is None
         msg = BusMessage(agent="a:1", topic="finding", summary="x", data={"k": 1})
+        assert getattr(msg, "__hash__", "missing") is None
+        # Sanity-check the runtime behavior matches by routing the call
+        # through ``object`` so static analysis can't pre-resolve the type.
+        opaque: object = msg
         with pytest.raises(TypeError):
-            hash(msg)
+            hash(opaque)
 
     def test_data_is_read_only_post_construction(self) -> None:
         msg = BusMessage(agent="a:1", topic="finding", summary="x", data={"k": 1})
