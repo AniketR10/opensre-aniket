@@ -6,6 +6,7 @@ import queue
 import socket
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -368,6 +369,65 @@ class TestPublishSubscribe:
         for q in sub_queues:
             msg = q.get(timeout=2.0)
             assert msg.summary == "hello"
+
+    def test_broadcast_holds_per_subscriber_write_lock(self, sock_path: Path) -> None:
+        # The bug: two reader-threads broadcasting concurrently to the same
+        # subscriber socket can interleave bytes mid-frame because
+        # ``sendall`` is multi-syscall under back-pressure. The fix is a
+        # per-subscriber write lock acquired around ``select`` + ``sendall``
+        # in ``_broadcast``.
+        #
+        # Reliably reproducing kernel-level byte interleaving across
+        # systems is fragile (depends on SNDBUF/RCVBUF tuning). Test the
+        # lock contract directly: hold the per-subscriber write_lock
+        # externally and confirm ``_broadcast`` blocks until release.
+        server = BusServer(sock_path)
+        server.start()
+        sub: socket.socket | None = None
+        try:
+            sub = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sub.connect(str(sock_path))
+
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                with server._lock:
+                    if server._subscribers:
+                        break
+                time.sleep(0.005)
+            with server._lock:
+                assert server._subscribers, "subscriber never attached"
+                # Grab the broker-side (sub, write_lock) pair.
+                ((_broker_sub, write_lock),) = server._subscribers.items()
+
+            # Hold the lock as if another reader-thread were mid-sendall.
+            assert write_lock.acquire(timeout=1.0)
+            broadcast_returned = threading.Event()
+            try:
+
+                def _bcast() -> None:
+                    server._broadcast(b'{"x":"y"}\n', origin=None)
+                    broadcast_returned.set()
+
+                t = threading.Thread(target=_bcast, daemon=True)
+                t.start()
+
+                # While we hold the lock, ``_broadcast`` must wait — without
+                # the lock it would race straight into ``sendall``.
+                assert not broadcast_returned.wait(timeout=0.2), (
+                    "broadcast did not block on per-subscriber write lock"
+                )
+            finally:
+                write_lock.release()
+
+            # After release, broadcast should complete promptly.
+            assert broadcast_returned.wait(timeout=2.0), (
+                "broadcast did not return after lock release"
+            )
+        finally:
+            if sub is not None:
+                with suppress(OSError):
+                    sub.close()
+            server.stop()
 
     def test_publisher_does_not_receive_own_frame(self, sock_path: Path) -> None:
         # Self-elect a broker so we can attach as a single client that

@@ -219,7 +219,14 @@ class BusServer:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._listener: socket.socket | None = None
-        self._subscribers: set[socket.socket] = set()
+        # Map of subscriber socket -> per-connection write lock. Concurrent
+        # broadcasts from multiple publisher reader-threads to the same
+        # subscriber socket would otherwise interleave bytes mid-frame
+        # (``sendall`` is multi-syscall for frames near the 64 KiB cap),
+        # producing a garbled JSONL line the subscriber cannot parse. The
+        # lock is per-subscriber so broadcasts to *different* subscribers
+        # still proceed in parallel.
+        self._subscribers: dict[socket.socket, threading.Lock] = {}
         self._lock = threading.Lock()
         self._running = threading.Event()
         self._accept_thread: threading.Thread | None = None
@@ -307,7 +314,7 @@ class BusServer:
                 return
             conn.setblocking(True)
             with self._lock:
-                self._subscribers.add(conn)
+                self._subscribers[conn] = threading.Lock()
             reader = threading.Thread(
                 target=self._reader_loop,
                 args=(conn,),
@@ -343,25 +350,36 @@ class BusServer:
 
     def _broadcast(self, frame: bytes, origin: socket.socket | None) -> None:
         with self._lock:
-            targets = list(self._subscribers)
+            # Snapshot (sub, write_lock) pairs so concurrent broadcasts to
+            # different subscribers can proceed in parallel — only writes to
+            # the *same* subscriber are serialized.
+            targets = list(self._subscribers.items())
         dead: list[socket.socket] = []
-        for sub in targets:
+        for sub, write_lock in targets:
             if sub is origin:
                 # Don't echo a publisher's own frame back to itself.
                 continue
             try:
-                # Write-readiness gate via select: a blocking ``sendall`` on a
-                # subscriber whose kernel recv buffer is full would wedge the
-                # reader thread of *every* publisher, freezing fan-out across
-                # the bus. Using ``select`` instead of ``sub.settimeout`` so
-                # the per-connection ``_reader_loop``'s ``recv`` is unaffected
-                # (a quiet healthy subscriber must not be evicted).
-                _r, ready, _x = select.select([], [sub], [], _BROADCAST_WRITE_TIMEOUT_SECONDS)
-                if not ready:
-                    logger.warning("bus subscriber unresponsive; evicting from fan-out")
-                    dead.append(sub)
-                    continue
-                sub.sendall(frame)
+                # Per-subscriber write lock prevents two publisher reader-
+                # threads from interleaving bytes mid-frame on the same
+                # socket (``sendall`` may issue multiple ``send`` syscalls
+                # for large frames). Different subscribers have independent
+                # locks, so cross-subscriber fan-out is unaffected.
+                with write_lock:
+                    # Write-readiness gate via ``select``: a blocking
+                    # ``sendall`` on a subscriber whose kernel recv buffer is
+                    # full would wedge the reader thread of *every*
+                    # publisher, freezing fan-out across the bus. Using
+                    # ``select`` instead of ``sub.settimeout`` so the
+                    # per-connection ``_reader_loop``'s ``recv`` is
+                    # unaffected (a quiet healthy subscriber must not be
+                    # evicted).
+                    _r, ready, _x = select.select([], [sub], [], _BROADCAST_WRITE_TIMEOUT_SECONDS)
+                    if not ready:
+                        logger.warning("bus subscriber unresponsive; evicting from fan-out")
+                        dead.append(sub)
+                        continue
+                    sub.sendall(frame)
             except (OSError, ValueError):
                 # ValueError: ``select`` rejects a closed fd (-1) by raising
                 # ValueError rather than OSError. Treat it the same as a
@@ -372,7 +390,7 @@ class BusServer:
 
     def _drop_subscriber(self, conn: socket.socket) -> None:
         with self._lock:
-            self._subscribers.discard(conn)
+            self._subscribers.pop(conn, None)
         with suppress(OSError):
             conn.close()
 
