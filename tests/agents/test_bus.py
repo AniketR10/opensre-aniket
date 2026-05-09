@@ -302,6 +302,72 @@ class TestPublisherCache:
         new_cached = next(iter(bus_module._publishers.values()))
         assert new_cached.sock is not broken_sock
 
+    def test_publish_retries_on_initial_connect_failure(
+        self, sock_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The first ``_get_or_open_publisher`` raises (e.g. broker exited
+        # between liveness check and connect). ``publish`` must run
+        # ``_ensure_broker`` and retry once instead of failing immediately.
+        real_get = bus_module._get_or_open_publisher
+        calls = {"n": 0}
+
+        def _flaky(target: Path, *, connect_timeout: float) -> bus_module._CachedPublisher:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionRefusedError(111, "Connection refused")
+            return real_get(target, connect_timeout=connect_timeout)
+
+        monkeypatch.setattr(bus_module, "_get_or_open_publisher", _flaky)
+
+        received: queue.Queue[BusMessage] = queue.Queue()
+        _drain_subscriber(sock_path, received, stop_after=1)
+
+        publish(BusMessage(agent="a:1", topic="finding", summary="retried"), path=sock_path)
+        msg = received.get(timeout=2.0)
+        assert msg.summary == "retried"
+        assert calls["n"] == 2, "publish() did not retry on initial connect failure"
+
+    def test_subscribe_retries_on_initial_connect_failure(
+        self, sock_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``subscribe`` previously raised on the first connect failure;
+        # symmetric with ``publish``, it now retries once.
+        real_connect = bus_module._connect_client
+        calls = {"n": 0}
+
+        def _flaky(target: Path, timeout: float) -> socket.socket:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionRefusedError(111, "Connection refused")
+            return real_connect(target, timeout=timeout)
+
+        monkeypatch.setattr(bus_module, "_connect_client", _flaky)
+
+        # Just calling subscribe() and pulling the first batch is enough —
+        # if the retry didn't happen, the call would raise.
+        received: queue.Queue[BusMessage] = queue.Queue()
+
+        def _loop() -> None:
+            for msg in subscribe(path=sock_path):
+                received.put(msg)
+                return
+
+        thread = threading.Thread(target=_loop, daemon=True)
+        thread.start()
+
+        # Wait for subscribe() to attach, give up to 2s.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            broker = bus_module._brokers.get(sock_path)
+            if broker is not None:
+                with broker._lock:
+                    if broker._subscribers:
+                        break
+            time.sleep(0.005)
+        broker = bus_module._brokers.get(sock_path)
+        assert broker is not None and broker._subscribers, "subscriber never attached after retry"
+        assert calls["n"] >= 2, "subscribe() did not retry on initial connect failure"
+
     def test_concurrent_publishes_do_not_interleave_frames(self, sock_path: Path) -> None:
         # If the per-socket send_lock weren't held around sendall(), concurrent
         # publishes from different threads could interleave bytes mid-frame,

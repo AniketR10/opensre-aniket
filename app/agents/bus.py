@@ -561,23 +561,26 @@ def publish(
     no replay buffer in v1).
 
     Publisher sockets are cached per ``path`` and reused across calls so a
-    burst of publishes does not spawn one broker reader-thread per call. On a
-    broken connection (broker died, peer reset) the cache is invalidated and
-    one reconnect is attempted before propagating the error.
+    burst of publishes does not spawn one broker reader-thread per call. On
+    any transient ``OSError`` — failed initial connect, broken cached
+    connection, or send error — one retry is attempted (re-electing the
+    broker if needed) before propagating the error.
     """
     target = path or DEFAULT_BUS_SOCKET_PATH
     _ensure_broker(target)
     frame = message.to_jsonl()
     last_err: OSError | None = None
     for attempt in range(2):
-        cached = _get_or_open_publisher(target, connect_timeout=connect_timeout)
+        cached: _CachedPublisher | None = None
         try:
+            cached = _get_or_open_publisher(target, connect_timeout=connect_timeout)
             with cached.send_lock:
                 cached.sock.sendall(frame)
             return
         except OSError as exc:
             last_err = exc
-            _drop_publisher(target, cached.sock)
+            if cached is not None:
+                _drop_publisher(target, cached.sock)
             if attempt == 0:
                 _ensure_broker(target)
     assert last_err is not None
@@ -601,10 +604,24 @@ def subscribe(
     can ``bind()`` the socket first (filesystem perms are the only auth) could
     otherwise stream unlimited bytes without newlines and exhaust subscriber
     memory. On overflow the subscriber logs a warning and disconnects.
+
+    Initial connect failures are retried once (mirroring ``publish()``) — the
+    most common cause is a broker that just exited, in which case
+    ``_ensure_broker`` will re-elect on the second pass.
     """
     target = path or DEFAULT_BUS_SOCKET_PATH
-    _ensure_broker(target)
-    client = _connect_client(target, timeout=connect_timeout)
+    last_connect_err: OSError | None = None
+    client: socket.socket | None = None
+    for _attempt in range(2):
+        _ensure_broker(target)
+        try:
+            client = _connect_client(target, timeout=connect_timeout)
+            break
+        except OSError as exc:
+            last_connect_err = exc
+    if client is None:
+        assert last_connect_err is not None
+        raise last_connect_err
     buf = b""
     try:
         while True:
