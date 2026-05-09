@@ -18,10 +18,11 @@ import logging
 import os
 import socket
 import threading
+import types
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -46,6 +47,12 @@ class BusMessage:
     Field shape mirrors ``AgentState.evidence`` entries so a message can be
     folded into investigation state without renaming. ``agent`` follows the
     ``"<name>:<pid>"`` convention used by ``app.agents.conflicts.WriteEvent``.
+
+    ``data`` is wrapped in ``types.MappingProxyType`` at construction so the
+    payload is read-only post-init; mutating ``msg.data["x"] = 1`` raises
+    ``TypeError``. ``__hash__`` is explicitly disabled because ``data`` is a
+    mapping and would otherwise produce a misleading auto-generated hash that
+    fails at call time.
     """
 
     agent: str
@@ -53,14 +60,34 @@ class BusMessage:
     summary: str
     source: str = ""
     path: str = ""
-    data: dict[str, object] = field(default_factory=dict)
+    data: Mapping[str, object] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     schema_version: int = BUS_SCHEMA_VERSION
 
+    # Disable hashing: a BusMessage carries a mapping and is not a value-key.
+    __hash__ = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        # Defensive copy + read-only view: protects against both external
+        # mutation of the original dict and ``msg.data["x"] = 1`` after
+        # construction. ``object.__setattr__`` bypasses the frozen check.
+        object.__setattr__(self, "data", types.MappingProxyType(dict(self.data)))
+
     def to_jsonl(self) -> bytes:
         """Encode as a single newline-terminated JSON frame ready for the socket."""
-        return (json.dumps(asdict(self), separators=(",", ":")) + "\n").encode("utf-8")
+        payload = {
+            "agent": self.agent,
+            "topic": self.topic,
+            "summary": self.summary,
+            "source": self.source,
+            "path": self.path,
+            "data": dict(self.data),
+            "id": self.id,
+            "timestamp": self.timestamp,
+            "schema_version": self.schema_version,
+        }
+        return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
     @classmethod
     def from_jsonl(cls, line: bytes | str) -> BusMessage:
@@ -82,20 +109,58 @@ class BusMessage:
         )
 
 
-def _socket_is_live(path: Path) -> bool:
-    """Return True if a broker is currently listening on ``path``."""
-    if not path.exists():
-        return False
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    probe.settimeout(0.2)
+def _pid_file_for(socket_path: Path) -> Path:
+    """Return the sidecar PID-file path for a given bus socket path."""
+    return socket_path.with_name(socket_path.name + ".pid")
+
+
+def _read_broker_pid(socket_path: Path) -> int | None:
+    """Read the broker PID from the sidecar file, or ``None`` if missing/garbled."""
+    pid_path = _pid_file_for(socket_path)
     try:
-        probe.connect(str(path))
+        text = pid_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _process_is_alive(pid: int) -> bool:
+    """``os.kill(pid, 0)`` probe: True iff the PID maps to a live process we can signal."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we can't signal it. Treat as alive — we still can't
+        # safely unlink the socket out from under whoever owns it.
+        return True
     except OSError:
         return False
-    finally:
-        with suppress(OSError):
-            probe.close()
     return True
+
+
+def _socket_is_live(path: Path) -> bool:
+    """Return True if a broker is currently listening on ``path``.
+
+    Uses a PID-file side channel rather than connecting to the socket: the
+    broker writes its PID on ``start()`` and removes it on ``stop()``. We treat
+    the broker as live iff the socket file exists, the PID file exists, and
+    the recorded PID maps to a process we can signal. This avoids creating a
+    short-lived phantom subscriber + reader thread on every ``publish()`` /
+    ``subscribe()`` call by a non-owner process.
+
+    A stale PID file (broker crashed without cleanup) is reported as not-live;
+    the caller's ``_unlink_stale`` path will remove the socket file and rebind.
+    """
+    if not path.exists():
+        return False
+    pid = _read_broker_pid(path)
+    if pid is None:
+        return False
+    return _process_is_alive(pid)
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -103,9 +168,28 @@ def _ensure_parent_dir(path: Path) -> None:
 
 
 def _unlink_stale(path: Path) -> None:
-    """Remove a socket file that exists on disk but has no listener."""
+    """Remove a socket file (and its sidecar PID file) that has no live listener."""
     with suppress(FileNotFoundError, OSError):
         os.unlink(path)
+    with suppress(FileNotFoundError, OSError):
+        os.unlink(_pid_file_for(path))
+
+
+def _write_pid_file_atomic(path: Path, pid: int) -> None:
+    """Write ``pid`` to the sidecar atomically (tmpfile + rename)."""
+    pid_path = _pid_file_for(path)
+    tmp = pid_path.with_name(pid_path.name + ".tmp")
+    try:
+        tmp.write_text(str(pid), encoding="utf-8")
+        with suppress(OSError):
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, pid_path)
+    except OSError:
+        with suppress(FileNotFoundError, OSError):
+            os.unlink(tmp)
+        # PID file is best-effort: bus still works without it, ``_socket_is_live``
+        # just falls back to "not live" and a peer might re-elect.
+        logger.warning("failed to write bus pid file at %s", pid_path)
 
 
 class BusServer:
@@ -150,6 +234,10 @@ class BusServer:
         listener.listen(16)
         self._listener = listener
         self._running.set()
+        # Publish our PID via the sidecar so peers can answer "is the broker
+        # live?" without making a real connection (which would otherwise spawn
+        # a short-lived phantom subscriber on every probe).
+        _write_pid_file_atomic(self._path, os.getpid())
         self._accept_thread = threading.Thread(
             target=self._accept_loop,
             name="agents-bus-accept",

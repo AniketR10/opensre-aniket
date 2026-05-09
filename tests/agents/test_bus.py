@@ -15,6 +15,8 @@ from app.agents.bus import (
     BUS_SCHEMA_VERSION,
     BusMessage,
     BusServer,
+    _pid_file_for,
+    _read_broker_pid,
     _socket_is_live,
     publish,
     subscribe,
@@ -84,6 +86,27 @@ class TestBusMessage:
         with pytest.raises(KeyError):
             BusMessage.from_jsonl(b'{"agent":"a:1","topic":"finding"}')
 
+    def test_is_not_hashable(self) -> None:
+        # ``data`` is a mapping, so a value hash would be misleading and would
+        # fail at call time on the auto-generated ``__hash__``. Disable it
+        # explicitly so callers see the unhashability up front.
+        msg = BusMessage(agent="a:1", topic="finding", summary="x", data={"k": 1})
+        with pytest.raises(TypeError):
+            hash(msg)
+
+    def test_data_is_read_only_post_construction(self) -> None:
+        msg = BusMessage(agent="a:1", topic="finding", summary="x", data={"k": 1})
+        with pytest.raises(TypeError):
+            msg.data["k"] = 2  # type: ignore[index]
+
+    def test_data_is_isolated_from_caller_mutation(self) -> None:
+        # External mutation of the originally-passed dict must not bleed into
+        # the message — defensive copy in ``__post_init__`` enforces this.
+        src: dict[str, object] = {"k": 1}
+        msg = BusMessage(agent="a:1", topic="finding", summary="x", data=src)
+        src["k"] = 999
+        assert msg.data["k"] == 1
+
 
 class TestBusServerLifecycle:
     def test_start_binds_socket_and_stop_unlinks(self, sock_path: Path) -> None:
@@ -112,6 +135,48 @@ class TestBusServerLifecycle:
         server.start()
         server.stop()
         server.stop()  # second call should be a no-op, not raise
+
+    def test_start_writes_pid_file_and_stop_removes_it(self, sock_path: Path) -> None:
+        import os
+
+        server = BusServer(sock_path)
+        server.start()
+        try:
+            pid_path = _pid_file_for(sock_path)
+            assert pid_path.exists()
+            assert _read_broker_pid(sock_path) == os.getpid()
+        finally:
+            server.stop()
+        assert not _pid_file_for(sock_path).exists()
+
+
+class TestLivenessProbe:
+    def test_socket_is_live_does_not_create_phantom_subscriber(self, sock_path: Path) -> None:
+        # _socket_is_live used to make a real connection on every probe; under
+        # publish/subscribe bursts that registered a short-lived subscriber +
+        # reader thread per call. Verify the side-channel probe makes none.
+        server = BusServer(sock_path)
+        server.start()
+        try:
+            for _ in range(20):
+                assert _socket_is_live(sock_path)
+            with server._lock:
+                assert len(server._subscribers) == 0
+        finally:
+            server.stop()
+
+    def test_socket_is_live_false_when_pid_missing(self, sock_path: Path) -> None:
+        sock_path.parent.mkdir(parents=True, exist_ok=True)
+        sock_path.touch()  # socket file present but no pid sidecar
+        assert not _socket_is_live(sock_path)
+
+    def test_socket_is_live_false_when_pid_dead(self, sock_path: Path) -> None:
+        sock_path.parent.mkdir(parents=True, exist_ok=True)
+        sock_path.touch()
+        # PID 999999 is almost certainly not a real process. The probe must
+        # report not-live so the caller will unlink + rebind.
+        _pid_file_for(sock_path).write_text("999999")
+        assert not _socket_is_live(sock_path)
 
 
 class TestPublishSubscribe:
