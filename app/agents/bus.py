@@ -321,6 +321,11 @@ def subscribe(
     misbehaving publisher should not kill an inspector REPL. The iterator ends
     cleanly on broker disconnect; ``KeyboardInterrupt`` propagates so callers
     (e.g. ``/agents bus``) can return to their prompt.
+
+    A buffer cap mirrors the broker's ``_reader_loop`` guard: any process that
+    can ``bind()`` the socket first (filesystem perms are the only auth) could
+    otherwise stream unlimited bytes without newlines and exhaust subscriber
+    memory. On overflow the subscriber logs a warning and disconnects.
     """
     target = path or DEFAULT_BUS_SOCKET_PATH
     _ensure_broker(target)
@@ -335,9 +340,18 @@ def subscribe(
             if not chunk:
                 return
             buf += chunk
+            if len(buf) > _MAX_FRAME_BYTES * 4:
+                logger.warning(
+                    "bus broker exceeded subscriber buffer cap (%d bytes); disconnecting",
+                    len(buf),
+                )
+                return
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 if not line:
+                    continue
+                if len(line) > _MAX_FRAME_BYTES:
+                    logger.warning("dropping oversized bus frame (%d bytes)", len(line))
                     continue
                 try:
                     yield BusMessage.from_jsonl(line)

@@ -180,6 +180,52 @@ class TestPublishSubscribe:
         msg = received.get(timeout=2.0)
         assert msg.summary == "ok"
 
+    def test_subscriber_disconnects_on_oversized_unterminated_stream(self, sock_path: Path) -> None:
+        # Simulate a hostile broker that wins the bind race and streams unlimited
+        # bytes without newlines. The subscriber must cap its buffer and bail
+        # rather than grow memory unboundedly.
+        from app.agents.bus import _MAX_FRAME_BYTES, BusServer, subscribe
+
+        # Stand up a fake "hostile" broker that pushes garbage to every client.
+        server = BusServer(sock_path)
+        server.start()
+        try:
+            done = threading.Event()
+            error: list[BaseException] = []
+
+            def _consume() -> None:
+                try:
+                    # Drain until subscribe() returns (which it should, on cap breach).
+                    for _ in subscribe(path=sock_path):
+                        pass
+                except BaseException as exc:  # noqa: BLE001
+                    error.append(exc)
+                finally:
+                    done.set()
+
+            t = threading.Thread(target=_consume, daemon=True)
+            t.start()
+            # Wait for the subscriber to attach to the broker.
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                with server._lock:
+                    if server._subscribers:
+                        break
+                time.sleep(0.02)
+            assert server._subscribers, "subscriber never attached"
+
+            # Push a single oversized chunk through to all subscribers.
+            payload = b"X" * (_MAX_FRAME_BYTES * 4 + 1024)
+            with server._lock:
+                victim = next(iter(server._subscribers))
+            victim.sendall(payload)
+
+            # Subscriber should disconnect on its own without raising.
+            assert done.wait(timeout=2.0), "subscriber did not disconnect on cap breach"
+            assert not error, f"subscribe() raised unexpectedly: {error}"
+        finally:
+            server.stop()
+
 
 class TestBrokerSelfElection:
     def test_stale_socket_file_is_unlinked_and_rebound(self, sock_path: Path) -> None:
