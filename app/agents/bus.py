@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import atexit
 import errno
+import fcntl
 import json
 import logging
 import os
@@ -402,6 +403,43 @@ _brokers: dict[Path, BusServer] = {}
 _BIND_RACE_ERRNOS: frozenset[int] = frozenset({errno.EADDRINUSE, errno.EEXIST})
 
 
+def _election_lock_path(socket_path: Path) -> Path:
+    """Sidecar lock file used to serialize broker election across processes."""
+    return socket_path.with_name(socket_path.name + ".lock")
+
+
+def _acquire_election_flock(path: Path) -> int | None:
+    """Open the election lock file and acquire an exclusive ``flock``.
+
+    Returns the open fd on success, or ``None`` if the lock could not be
+    obtained (file system without ``flock`` support, permission denied,
+    ...). The caller is responsible for releasing + closing the fd via
+    ``_release_election_flock``.
+    """
+    lock_path = _election_lock_path(path)
+    try:
+        _ensure_parent_dir(lock_path)
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        with suppress(OSError):
+            os.close(fd)
+        return None
+    return fd
+
+
+def _release_election_flock(fd: int | None) -> None:
+    if fd is None:
+        return
+    with suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    with suppress(OSError):
+        os.close(fd)
+
+
 def _ensure_broker(path: Path) -> BusServer | None:
     """Elect a broker for ``path`` if none is live, else return ``None``.
 
@@ -410,28 +448,51 @@ def _ensure_broker(path: Path) -> BusServer | None:
     should connect as a client). If a stale socket file exists, unlinks it and
     retries the bind.
 
-    A lost bind race (``EADDRINUSE`` / ``EEXIST``) is converted to ``None``
-    because that just means a peer beat us to the elect. Any other ``OSError``
-    from ``start()`` (e.g. PID-file write failure, parent-dir creation failure)
-    is propagated — those are real errors users need to see, not bus splits to
+    Cross-process election is serialized by a POSIX ``flock`` on a sidecar
+    lock file (``<socket>.lock``). Without it, two processes that both
+    observe ``_socket_is_live`` → False can race through ``_unlink_stale`` +
+    ``bind``: the kernel guarantees one bind succeeds, but the loser is left
+    holding a listener fd whose filesystem path the winner just took, plus
+    the accept/reader daemon threads it spawned — a real resource leak that
+    persists for the loser's process lifetime. Holding the flock around the
+    check-then-bind sequence makes election atomic across processes.
+
+    A lost bind race (``EADDRINUSE`` / ``EEXIST``) is still converted to
+    ``None`` defensively — flock is best-effort on exotic filesystems. Any
+    other ``OSError`` from ``start()`` (e.g. PID-file write failure) is
+    propagated — those are real errors users need to see, not bus splits to
     paper over silently.
     """
+    # Fast in-process path: if we already own a running broker, no
+    # cross-process work is needed.
     with _broker_lock:
         existing = _brokers.get(path)
         if existing is not None and existing.is_running:
             return existing
-        if _socket_is_live(path):
-            return None
-        _unlink_stale(path)
-        server = BusServer(path)
-        try:
-            server.start()
-        except OSError as exc:
-            if exc.errno in _BIND_RACE_ERRNOS:
+
+    flock_fd = _acquire_election_flock(path)
+    try:
+        with _broker_lock:
+            # Re-check inside the cross-process lock: a peer (or another
+            # thread that also raced past the fast path) may have just
+            # elected.
+            existing = _brokers.get(path)
+            if existing is not None and existing.is_running:
+                return existing
+            if _socket_is_live(path):
                 return None
-            raise
-        _brokers[path] = server
-        return server
+            _unlink_stale(path)
+            server = BusServer(path)
+            try:
+                server.start()
+            except OSError as exc:
+                if exc.errno in _BIND_RACE_ERRNOS:
+                    return None
+                raise
+            _brokers[path] = server
+            return server
+    finally:
+        _release_election_flock(flock_fd)
 
 
 def _connect_client(path: Path, timeout: float) -> socket.socket:

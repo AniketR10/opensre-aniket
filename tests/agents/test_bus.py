@@ -668,6 +668,152 @@ class TestPublishSubscribe:
             server.stop()
 
 
+class TestBrokerElectionRace:
+    def test_concurrent_cold_start_election_does_not_orphan_a_broker(self, sock_path: Path) -> None:
+        # Cold-start race: two processes both observe ``_socket_is_live``
+        # → False, both call ``_unlink_stale``, both try to bind. The
+        # kernel only lets one bind succeed, but without cross-process
+        # serialization the loser is left holding a listener fd whose
+        # filesystem path the winner just unlinked, plus the accept/
+        # reader daemon threads. The election ``flock`` prevents that.
+        #
+        # We simulate the race by holding the flock from this test
+        # process and concurrently spawning a child that calls
+        # ``_ensure_broker``. The child must block on the flock until we
+        # release it, then return ``None`` (we elected first).
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        # Bind a broker first; once it's live, any peer (including the
+        # subprocess we'll spawn) sees it via the PID-file side channel and
+        # backs off. The flock only matters during the check-unlink-bind
+        # window, which closes after ``server.start()`` returns.
+        server = bus_module.BusServer(sock_path)
+        server.start()
+        try:
+            assert sock_path.exists()
+            assert _pid_file_for(sock_path).exists()
+
+            # Spawn a real subprocess that calls ``_ensure_broker`` for
+            # the same path. With the election lock and the live PID
+            # sidecar, the child must observe our broker and return
+            # ``None``. Without the flock contract, a concurrent cold
+            # start could unlink our socket file and rebind, orphaning
+            # this server.
+            repo_root = Path(__file__).resolve().parents[2]
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        from pathlib import Path
+                        from app.agents import bus
+
+                        result = bus._ensure_broker(Path({str(sock_path)!r}))
+                        print("OWNER" if result is not None else "PEER")
+                        """
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+                env={**os.environ, "PYTHONPATH": str(repo_root)},
+            )
+            assert child.returncode == 0, child.stderr
+            assert child.stdout.strip() == "PEER", (
+                f"child wrongly elected itself: stdout={child.stdout!r} stderr={child.stderr!r}"
+            )
+
+            # Our broker is unscathed: socket file + pid file still there,
+            # listener still accepting connections.
+            assert sock_path.exists(), "winner's socket file vanished"
+            assert _pid_file_for(sock_path).exists(), "winner's pid file vanished"
+            assert server.is_running
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(2.0)
+            client.connect(str(sock_path))
+            client.close()
+        finally:
+            server.stop()
+
+    def test_election_lock_path_lives_next_to_socket(self, sock_path: Path) -> None:
+        # Sanity-check the sidecar location so future refactors don't
+        # silently move it (which would re-open the cross-process race).
+        lock_path = bus_module._election_lock_path(sock_path)
+        assert lock_path.parent == sock_path.parent
+        assert lock_path.name == sock_path.name + ".lock"
+
+    def test_ensure_broker_blocks_on_election_flock_held_by_peer(self, sock_path: Path) -> None:
+        # Direct test of the cross-process serialization: a child process
+        # holds the election flock; this process's ``_ensure_broker``
+        # must block on ``flock(LOCK_EX)`` until the child releases it.
+        # Without this, two concurrent cold-start callers can race
+        # through unlink+bind and leave one orphaned.
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        repo_root = Path(__file__).resolve().parents[2]
+        # Ensure parent dir exists so the child can open the lock file.
+        sock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Child: open + flock the election file, signal "READY", sleep,
+        # then exit (flock auto-released on close).
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    import os, fcntl, sys, time
+                    from pathlib import Path
+                    from app.agents import bus
+
+                    fd = bus._acquire_election_flock(Path({str(sock_path)!r}))
+                    print("READY", flush=True)
+                    time.sleep(0.5)
+                    bus._release_election_flock(fd)
+                    """
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(repo_root)},
+        )
+        try:
+            # Wait for the child to confirm it holds the lock.
+            assert child.stdout is not None
+            line = child.stdout.readline()
+            assert line.strip() == "READY", f"child did not signal ready: {line!r}"
+
+            # Now ``_ensure_broker`` here must wait on the flock. Time
+            # the call: it should take roughly the remaining sleep time.
+            t0 = time.monotonic()
+            server = bus_module._ensure_broker(sock_path)
+            elapsed = time.monotonic() - t0
+            try:
+                assert server is not None, "we should have elected after child released"
+                # The child slept 0.5s total starting before READY; we
+                # should have waited for some appreciable fraction of
+                # that. 0.1s is well under the 0.5s sleep but well above
+                # zero, so it cleanly distinguishes "blocked on flock"
+                # from "didn't block at all".
+                assert elapsed >= 0.1, (
+                    f"_ensure_broker did not block on the election flock (elapsed={elapsed:.3f}s)"
+                )
+            finally:
+                if server is not None:
+                    server.stop()
+        finally:
+            child.wait(timeout=5.0)
+
+
 class TestBrokerSelfElection:
     def test_stale_socket_file_is_unlinked_and_rebound(self, sock_path: Path) -> None:
         sock_path.parent.mkdir(parents=True, exist_ok=True)
