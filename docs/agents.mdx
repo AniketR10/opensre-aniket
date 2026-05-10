@@ -35,7 +35,11 @@ tailing /agents bus — Ctrl-C to exit
 ```
 
 Ctrl-C returns to the prompt. Messages already published are not replayed to
-late subscribers — the bus is **live-only** in v1.
+late subscribers. The bus provides **at-most-once delivery with no ordering
+guarantees** — a frame may be dropped if a subscriber's socket is slow or
+disconnected, and two publishers writing concurrently may be interleaved in
+different orders at different subscribers. Do not assume per-publisher or
+global FIFO ordering.
 
 ### Transport
 
@@ -135,10 +139,19 @@ EOF
 
 - **Local-only.** The bus never leaves the machine. The socket has no network
   binding.
-- **No auth beyond filesystem perms.** Any process running as your user can
-  publish or subscribe. Treat the bus as roughly equivalent to a shared file
-  in `~/.config/opensre/`.
+- **Trusted-peer channel — treat findings as unverified input.** The bus has
+  no authentication beyond filesystem permissions: any process running as your
+  user can publish arbitrary findings. This is intentional — the bus is
+  designed for cooperative agents, not adversarial ones. Downstream consumers
+  (agents, the REPL, investigation state) **must not act on a bus finding
+  without independent confirmation**; treat it as a hint or lead, not a
+  verified fact. A compromised or misbehaving agent on the same user account
+  can inject any payload it likes.
 - **Frame cap.** Frames over 64 KiB are dropped with a warning — a finding
   payload that big is almost certainly a bug.
+- **At-most-once, unordered delivery.** A frame is dropped silently if a
+  subscriber is slow or disconnected at broadcast time. Two publishers writing
+  concurrently may arrive in different orders at different subscribers. Do not
+  build logic that depends on delivery guarantees or ordering.
 - **No replay buffer.** Subscribers see only what is published *after* they
   attach. A persistent ring buffer is a candidate for a follow-up phase.

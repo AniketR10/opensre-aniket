@@ -632,14 +632,14 @@ class TestPublishSubscribe:
         server.start()
         try:
             done = threading.Event()
-            error: list[BaseException] = []
+            error: list[Exception] = []
 
             def _consume() -> None:
                 try:
                     # Drain until subscribe() returns (which it should, on cap breach).
                     for _ in subscribe(path=sock_path):
                         pass
-                except BaseException as exc:  # noqa: BLE001
+                except Exception as exc:
                     error.append(exc)
                 finally:
                     done.set()
