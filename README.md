@@ -359,10 +359,10 @@ Thanks goes to these amazing people:
         </a>
     </td>
             <td align="center">
-        <a href="https://github.com/paultracer">
-            <img src="https://avatars.githubusercontent.com/u/214484440?v=4" width="100" alt="paultracer"/>
+        <a href="https://github.com/0xpaulx">
+            <img src="https://avatars.githubusercontent.com/u/214484440?v=4" width="100" alt="0xpaulx"/>
             <br />
-            <sub><b>paultracer</b></sub>
+            <sub><b>0xpaulx</b></sub>
         </a>
     </td>
 		</tr>
