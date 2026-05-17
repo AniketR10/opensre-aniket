@@ -94,8 +94,11 @@ def test_pattern_rule_does_not_match_logger_name_in_raw_line() -> None:
         logger_name="oom_killer_watcher",
     )
     # Confirm the raw line actually triggers the pattern — ensures the
-    # test is a genuine regression guard, not vacuously green.
-    assert rule.patterns[2].search(record.raw) is not None  # \boom[- _]killer
+    # test is a genuine regression guard, not vacuously green. Looked
+    # up by pattern source so reordering the tuple can't silently make
+    # this assertion test the wrong pattern.
+    oom_killer_pat = next(p for p in rule.patterns if r"oom[- _]killer" in p.pattern)
+    assert oom_killer_pat.search(record.raw) is not None
     assert rule.evaluate(record) is None
 
 
@@ -151,8 +154,11 @@ def test_repeat_rule_does_not_match_logger_name_in_raw_line() -> None:
             message="heartbeat ok",
             raw="WARNING service restart: heartbeat ok",
         )
-        # Confirm the raw line actually triggers the pattern.
-        assert crash.patterns[0].search(record.raw) is not None
+        # Confirm the raw line actually triggers the pattern. Looked up
+        # by pattern source so reordering the tuple can't silently make
+        # this assertion test the wrong pattern.
+        restart_pat = next(p for p in crash.patterns if "start" in p.pattern)
+        assert restart_pat.search(record.raw) is not None
         assert crash.evaluate(record) is None
 
 
