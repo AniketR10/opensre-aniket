@@ -31,6 +31,7 @@ from app.integrations.config_models import (
     SlackWebhookConfig,
     SplunkIntegrationConfig,
     TelegramBotConfig,
+    TwilioIntegrationConfig,
     VictoriaLogsIntegrationConfig,
     WhatsAppConfig,
 )
@@ -486,6 +487,21 @@ def _classify_service_instance(
         except Exception:
             return None, None
         return wa_config.model_dump(), "whatsapp"
+
+    if key == "twilio":
+        try:
+            twilio_config = TwilioIntegrationConfig.model_validate(
+                {
+                    "account_sid": credentials.get("account_sid", ""),
+                    "auth_token": credentials.get("auth_token", ""),
+                    "whatsapp": credentials.get("whatsapp", {}),
+                    "sms": credentials.get("sms", {}),
+                    "integration_id": record_id,
+                }
+            )
+        except Exception:
+            return None, None
+        return twilio_config.model_dump(), "twilio"
 
     if key == "openclaw":
         try:
@@ -1351,6 +1367,44 @@ def load_env_integrations() -> list[dict[str, Any]]:
             }
         )
         integrations.append(_active_env_record("whatsapp", wa_config.model_dump()))
+
+    # Unified Twilio multi-channel — independent of the legacy WhatsApp record.
+    # The env wizard hydrates Twilio when account+token are present AND at least
+    # one channel-specific FROM number is set.
+    twilio_sms_from = os.getenv("TWILIO_SMS_FROM", "").strip()
+    twilio_sms_messaging_service = os.getenv("TWILIO_SMS_MESSAGING_SERVICE_SID", "").strip()
+    twilio_whatsapp_from = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
+    if (
+        wa_account_sid
+        and wa_auth_token
+        and (twilio_sms_from or twilio_sms_messaging_service or twilio_whatsapp_from)
+    ):
+        twilio_payload: dict[str, Any] = {
+            "account_sid": wa_account_sid,
+            "auth_token": wa_auth_token,
+            "whatsapp": {
+                "enabled": bool(twilio_whatsapp_from),
+                "from_number": twilio_whatsapp_from,
+                "default_to": os.getenv("WHATSAPP_DEFAULT_TO", "").strip() or None,
+            },
+            "sms": {
+                "enabled": bool(twilio_sms_from or twilio_sms_messaging_service),
+                "from_number": twilio_sms_from,
+                "messaging_service_sid": twilio_sms_messaging_service,
+                "default_to": os.getenv("TWILIO_SMS_DEFAULT_TO", "").strip() or None,
+            },
+        }
+        try:
+            twilio_config = TwilioIntegrationConfig.model_validate(twilio_payload)
+        except Exception:
+            twilio_config = None
+        if twilio_config is not None:
+            integrations.append(
+                _active_env_record(
+                    "twilio",
+                    twilio_config.model_dump(exclude={"integration_id"}),
+                )
+            )
 
     atlas_pub = os.getenv("MONGODB_ATLAS_PUBLIC_KEY", "").strip()
     atlas_priv = os.getenv("MONGODB_ATLAS_PRIVATE_KEY", "").strip()

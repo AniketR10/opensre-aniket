@@ -552,6 +552,60 @@ def _setup_whatsapp() -> None:
     )
 
 
+def _setup_twilio() -> None:
+    """Wizard for the unified Twilio integration (WhatsApp + SMS)."""
+    account_sid = _p("Twilio Account SID (starts with AC...)")
+    auth_token = _p("Twilio Auth Token", secret=True)
+    if not account_sid or not auth_token:
+        _die("account_sid and auth_token are required.")
+
+    whatsapp_credentials: dict[str, Any] = {"enabled": False, "from_number": ""}
+    sms_credentials: dict[str, Any] = {"enabled": False, "from_number": ""}
+
+    enable_whatsapp = questionary.confirm("Enable WhatsApp channel?", default=True).ask()
+    if enable_whatsapp:
+        wa_from = _p("WhatsApp From number (e.g. whatsapp:+14155238886; sandbox is fine)")
+        if not wa_from:
+            _die("WhatsApp from_number is required when WhatsApp is enabled.")
+        whatsapp_credentials = {
+            "enabled": True,
+            "from_number": wa_from,
+            "default_to": _p("Default WhatsApp recipient (optional, e.g. +1234567890)") or None,
+        }
+
+    enable_sms = questionary.confirm("Enable SMS channel?", default=True).ask()
+    if enable_sms:
+        sms_from = _p(
+            "Twilio SMS From number (E.164, e.g. +14155551234; leave blank to use a Messaging Service SID)"
+        )
+        messaging_service_sid = ""
+        if not sms_from:
+            messaging_service_sid = _p("Twilio Messaging Service SID (starts with MG...)")
+            if not messaging_service_sid:
+                _die("SMS requires either from_number or messaging_service_sid.")
+        sms_credentials = {
+            "enabled": True,
+            "from_number": sms_from,
+            "messaging_service_sid": messaging_service_sid,
+            "default_to": _p("Default SMS recipient (optional, E.164)") or None,
+        }
+
+    if not (whatsapp_credentials["enabled"] or sms_credentials["enabled"]):
+        _die("At least one Twilio channel (WhatsApp or SMS) must be enabled.")
+
+    upsert_integration(
+        "twilio",
+        {
+            "credentials": {
+                "account_sid": account_sid,
+                "auth_token": auth_token,
+                "whatsapp": whatsapp_credentials,
+                "sms": sms_credentials,
+            }
+        },
+    )
+
+
 def _setup_openclaw() -> None:
     print("  1) stdio (recommended)  2) Streamable HTTP  3) SSE")
     choice = _p("Choice", default="1")
@@ -798,6 +852,7 @@ _HANDLERS: dict[str, Any] = {
     "mongodb": _setup_mongodb,
     "discord": _setup_discord,
     "whatsapp": _setup_whatsapp,
+    "twilio": _setup_twilio,
     "openclaw": _setup_openclaw,
     "postgresql": _setup_postgresql,
     "mysql": _setup_mysql,

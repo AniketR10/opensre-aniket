@@ -714,7 +714,12 @@ class TelegramBotConfig(StrictConfigModel):
 
 
 class WhatsAppConfig(StrictConfigModel):
-    """Twilio WhatsApp runtime config."""
+    """Twilio WhatsApp runtime config (legacy single-channel shape).
+
+    Back-compat alias of the WhatsApp channel inside the unified
+    :class:`TwilioIntegrationConfig`. Existing ``whatsapp`` records resolve
+    through this shape unchanged.
+    """
 
     account_sid: str
     auth_token: str
@@ -748,6 +753,96 @@ class WhatsAppConfig(StrictConfigModel):
         if not stripped:
             raise ValueError("from_number cannot be empty or just whitespace")
         return stripped
+
+
+class TwilioWhatsAppChannelConfig(StrictConfigModel):
+    """WhatsApp channel sub-config inside a unified Twilio integration."""
+
+    enabled: bool = True
+    from_number: str = ""
+    default_to: str | None = None
+
+    _normalize_from_number = field_validator("from_number", mode="before")(normalize_str())
+    _normalize_enabled = field_validator("enabled", mode="before")(normalize_bool_str())
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.enabled and self.from_number)
+
+
+class TwilioSMSChannelConfig(StrictConfigModel):
+    """SMS channel sub-config inside a unified Twilio integration.
+
+    Either ``from_number`` (a Twilio-provisioned phone number) OR
+    ``messaging_service_sid`` (a Twilio Messaging Service) must be set
+    for the channel to be considered configured.
+    """
+
+    enabled: bool = False
+    from_number: str = ""
+    default_to: str | None = None
+    messaging_service_sid: str = ""
+
+    _normalize_strs = field_validator("from_number", "messaging_service_sid", mode="before")(
+        normalize_str()
+    )
+    _normalize_enabled = field_validator("enabled", mode="before")(normalize_bool_str())
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.enabled and (self.from_number or self.messaging_service_sid))
+
+
+class TwilioIntegrationConfig(StrictConfigModel):
+    """Unified Twilio runtime config with per-channel sub-configs.
+
+    Exposes WhatsApp and SMS channels as independently selectable
+    under one set of Twilio account credentials.
+    """
+
+    account_sid: str
+    auth_token: str
+    whatsapp: TwilioWhatsAppChannelConfig = Field(default_factory=TwilioWhatsAppChannelConfig)
+    sms: TwilioSMSChannelConfig = Field(default_factory=TwilioSMSChannelConfig)
+    identity_policy: dict[str, object] | None = Field(
+        default=None,
+        description="Messaging identity policy for inbound security (MessagingIdentityPolicy shape)",
+    )
+    integration_id: str = ""
+
+    @field_validator("account_sid", mode="before")
+    @classmethod
+    def _validate_account_sid(cls, value: object) -> str:
+        stripped = str(value or "").strip()
+        if not stripped:
+            raise ValueError("account_sid cannot be empty or just whitespace")
+        return stripped
+
+    @field_validator("auth_token", mode="before")
+    @classmethod
+    def _validate_auth_token(cls, value: object) -> str:
+        stripped = str(value or "").strip()
+        if not stripped:
+            raise ValueError("auth_token cannot be empty or just whitespace")
+        return stripped
+
+    @model_validator(mode="after")
+    def _require_at_least_one_channel(self) -> TwilioIntegrationConfig:
+        if not (self.whatsapp.is_configured or self.sms.is_configured):
+            raise ValueError(
+                "Twilio integration requires at least one configured channel "
+                "(whatsapp or sms with from_number and enabled=true)."
+            )
+        return self
+
+    @property
+    def configured_channels(self) -> list[str]:
+        channels: list[str] = []
+        if self.whatsapp.is_configured:
+            channels.append("whatsapp")
+        if self.sms.is_configured:
+            channels.append("sms")
+        return channels
 
 
 class SlackBotConfig(StrictConfigModel):

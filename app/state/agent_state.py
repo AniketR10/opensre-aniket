@@ -121,6 +121,10 @@ class AgentState(TypedDict, total=False):
     # WhatsApp context (when triggered from WhatsApp message or override)
     whatsapp_context: dict[str, Any]
 
+    # Twilio multi-channel context (per-channel recipient overrides, e.g.
+    # {"sms": {"to": "+1..."}, "whatsapp": {"to": "whatsapp:+1..."}})
+    twilio_context: dict[str, Any]
+
     # OpenClaw context (for write-back targeting / transport overrides)
     openclaw_context: dict[str, Any]
 
@@ -201,6 +205,7 @@ class AgentStateModel(StrictConfigModel):
     discord_context: dict[str, Any] = Field(default_factory=dict)
     telegram_context: dict[str, Any] = Field(default_factory=dict)
     whatsapp_context: dict[str, Any] = Field(default_factory=dict)
+    twilio_context: dict[str, Any] = Field(default_factory=dict)
     openclaw_context: dict[str, Any] = Field(default_factory=dict)
     thread_id: str = ""
     run_id: str = ""

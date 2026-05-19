@@ -374,6 +374,65 @@ def _verify_whatsapp(source: str, config: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _verify_twilio(source: str, config: dict[str, Any]) -> dict[str, str]:
+    """Verify unified Twilio integration: account auth + per-channel readiness.
+
+    A "passed" result lists every channel that is enabled with a usable
+    sender (WhatsApp ``from_number`` / SMS ``from_number`` or
+    ``messaging_service_sid``). A configured account with zero channels
+    ready is reported as ``failed`` so the user gets a clear signal that
+    nothing will deliver.
+    """
+    account_sid = str(config.get("account_sid", "")).strip()
+    auth_token = str(config.get("auth_token", "")).strip()
+    if not account_sid:
+        return result("twilio", source, "missing", "Missing account_sid.")
+    if not auth_token:
+        return result("twilio", source, "missing", "Missing auth_token.")
+
+    try:
+        response = requests.get(
+            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}.json",
+            auth=(account_sid, auth_token),
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return result("twilio", source, "failed", f"Twilio API check failed: {exc}")
+
+    friendly_name = str(payload.get("friendly_name", "")).strip() or account_sid
+
+    whatsapp_cfg = config.get("whatsapp") or {}
+    sms_cfg = config.get("sms") or {}
+    ready: list[str] = []
+    if whatsapp_cfg.get("enabled") and str(whatsapp_cfg.get("from_number") or "").strip():
+        ready.append("whatsapp")
+    if sms_cfg.get("enabled") and (
+        str(sms_cfg.get("from_number") or "").strip()
+        or str(sms_cfg.get("messaging_service_sid") or "").strip()
+    ):
+        ready.append("sms")
+
+    if not ready:
+        return result(
+            "twilio",
+            source,
+            "failed",
+            (
+                f"Connected to Twilio account {friendly_name} but no channels are ready. "
+                "Enable WhatsApp or SMS and set a from_number."
+            ),
+        )
+
+    return result(
+        "twilio",
+        source,
+        "passed",
+        f"Connected to Twilio account {friendly_name}; channels ready: {', '.join(ready)}.",
+    )
+
+
 def _verify_snowflake(source: str, config: dict[str, Any]) -> dict[str, str]:
     account_identifier = str(config.get("account_identifier", "")).strip()
     token = str(config.get("token", "")).strip()
@@ -659,6 +718,7 @@ __all__ = [
     "_verify_supabase",
     "_verify_telegram",
     "_verify_tracer",
+    "_verify_twilio",
     "_verify_vercel",
     "_verify_victoria_logs",
     "_verify_whatsapp",

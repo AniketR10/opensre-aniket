@@ -43,6 +43,7 @@ from app.integrations._verification_adapters import (
     _verify_supabase,
     _verify_telegram,
     _verify_tracer,
+    _verify_twilio,
     _verify_vercel,
     _verify_victoria_logs,
     _verify_whatsapp,
@@ -221,6 +222,13 @@ INTEGRATION_SPECS: tuple[IntegrationSpec, ...] = (
     IntegrationSpec(
         service="whatsapp",
         verifier=_verify_whatsapp,
+        direct_effective=True,
+        setup_order=19,
+        verify_order=27,
+    ),
+    IntegrationSpec(
+        service="twilio",
+        verifier=_verify_twilio,
         direct_effective=True,
         setup_order=19,
         verify_order=27,
