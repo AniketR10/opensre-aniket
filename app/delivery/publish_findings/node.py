@@ -232,8 +232,14 @@ def generate_report(state: InvestigationState) -> dict:
                 bool(account_sid),
             )
             if account_sid and auth_token and sms_to and (sms_from or messaging_service_sid):
+                # SMS currently reuses the WhatsApp-formatted body — both
+                # channels render the same plain-text RCA summary. If
+                # formatting needs to diverge (e.g. shorter SMS body or
+                # different headers), introduce ``format_sms_message`` in
+                # ``formatters/report.py`` and route it through here.
+                sms_message = whatsapp_message
                 sms_ok, sms_error, sms_sid = send_twilio_sms_report(
-                    whatsapp_message,
+                    sms_message,
                     {
                         "account_sid": account_sid,
                         "auth_token": auth_token,

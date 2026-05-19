@@ -12,18 +12,11 @@ import logging
 from typing import Any
 
 from app.utils.truncation import truncate
-from app.utils.twilio_delivery import (
-    _TWILIO_BASE_URL,
-    _WHATSAPP_LIMIT,
-    post_twilio_message,
-)
+from app.utils.twilio_delivery import _WHATSAPP_LIMIT, post_twilio_message
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_LIMIT = _WHATSAPP_LIMIT
 __all__ = [
-    "_MESSAGE_LIMIT",
-    "_TWILIO_BASE_URL",
     "post_whatsapp_message_twilio",
     "send_whatsapp_report",
 ]
@@ -63,7 +56,7 @@ def send_whatsapp_report(
     if not account_sid or not auth_token or not from_number or not to:
         return False, "Missing account_sid, auth_token, from_number, or to"
 
-    text = truncate(report, _MESSAGE_LIMIT, suffix="…")
+    text = truncate(report, _WHATSAPP_LIMIT, suffix="…")
     post_success, error, _ = post_whatsapp_message_twilio(
         to=to,
         text=text,

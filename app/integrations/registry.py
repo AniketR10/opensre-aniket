@@ -230,8 +230,8 @@ INTEGRATION_SPECS: tuple[IntegrationSpec, ...] = (
         service="twilio",
         verifier=_verify_twilio,
         direct_effective=True,
-        setup_order=19,
-        verify_order=27,
+        setup_order=20,
+        verify_order=28,
     ),
     IntegrationSpec(
         service="openclaw",
