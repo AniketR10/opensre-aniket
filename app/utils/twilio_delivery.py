@@ -1,15 +1,13 @@
-"""Twilio delivery helpers (SMS + WhatsApp transport).
+"""Twilio SMS delivery helper — posts investigation findings via Twilio SMS.
 
-Single shared transport for posting Twilio Messaging API requests. SMS uses
-the raw E.164 number or a Messaging Service SID; the ``whatsapp`` channel
-applies the ``whatsapp:`` prefix and exists so the standalone ``whatsapp``
-integration can reuse this transport.
+This module is independent of the WhatsApp integration: WhatsApp delivery
+lives in :mod:`app.utils.whatsapp_delivery` and the two share no code.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
@@ -17,11 +15,8 @@ from app.utils.truncation import truncate
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_LIMIT = 1600
-_WHATSAPP_LIMIT = 4096
+_SMS_LIMIT = 1600
 _TWILIO_BASE_URL = "https://api.twilio.com/2010-04-01/Accounts"
-
-TwilioChannel = Literal["whatsapp", "sms"]
 
 
 def _redact_token(text: str, token: str) -> str:
@@ -31,19 +26,7 @@ def _redact_token(text: str, token: str) -> str:
     return text
 
 
-def _normalize_endpoint(channel: TwilioChannel, value: str) -> str:
-    """Apply the ``whatsapp:`` prefix for the WhatsApp channel.
-
-    SMS numbers are passed through unchanged (Twilio expects E.164).
-    """
-    stripped = (value or "").strip()
-    if channel != "whatsapp":
-        return stripped
-    return stripped if stripped.startswith("whatsapp:") else f"whatsapp:{stripped}"
-
-
-def post_twilio_message(
-    channel: TwilioChannel,
+def post_twilio_sms(
     to: str,
     text: str,
     account_sid: str,
@@ -52,7 +35,7 @@ def post_twilio_message(
     messaging_service_sid: str = "",
     status_callback: str = "",
 ) -> tuple[bool, str, str]:
-    """Send a Twilio Messaging API request for ``whatsapp`` or ``sms``.
+    """Send an SMS via the Twilio Messaging API.
 
     Returns ``(success, error, message_sid)``. Either ``from_number`` or
     ``messaging_service_sid`` must be set; if both are provided,
@@ -61,16 +44,16 @@ def post_twilio_message(
     if not (from_number or messaging_service_sid):
         return False, "Missing from_number or messaging_service_sid.", ""
 
-    logger.debug("[twilio] post %s message to %s", channel, to)
+    logger.debug("[twilio-sms] post message to %s", to)
     url = f"{_TWILIO_BASE_URL}/{account_sid}/Messages.json"
     payload: dict[str, str] = {
-        "To": _normalize_endpoint(channel, to),
+        "To": to.strip(),
         "Body": text,
     }
     if messaging_service_sid:
         payload["MessagingServiceSid"] = messaging_service_sid
     elif from_number:
-        payload["From"] = _normalize_endpoint(channel, from_number)
+        payload["From"] = from_number.strip()
     if status_callback:
         payload["StatusCallback"] = status_callback
 
@@ -84,7 +67,7 @@ def post_twilio_message(
         )
     except Exception as exc:
         error = _redact_token(str(exc), auth_token)
-        logger.warning("[twilio] %s post exception: %s", channel, error)
+        logger.warning("[twilio-sms] post exception: %s", error)
         return False, error, ""
 
     parsed: dict[str, Any] = {}
@@ -105,7 +88,7 @@ def post_twilio_message(
         else:
             error_message = response.text or f"HTTP {response.status_code}"
         error_message = _redact_token(error_message, auth_token)
-        logger.warning("[twilio] %s post failed: %s", channel, error_message)
+        logger.warning("[twilio-sms] post failed: %s", error_message)
         return False, error_message, ""
 
     return True, "", str(parsed.get("sid") or "")
@@ -133,9 +116,8 @@ def send_twilio_sms_report(
     if not (from_number or messaging_service_sid):
         return False, "Missing from_number or messaging_service_sid", ""
 
-    text = truncate(report, _MESSAGE_LIMIT, suffix="…")
-    return post_twilio_message(
-        channel="sms",
+    text = truncate(report, _SMS_LIMIT, suffix="…")
+    return post_twilio_sms(
         to=to,
         text=text,
         account_sid=account_sid,

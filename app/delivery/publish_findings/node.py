@@ -216,8 +216,8 @@ def generate_report(state: InvestigationState) -> dict:
         if sms_cfg.get("enabled"):
             from app.utils.twilio_delivery import send_twilio_sms_report
 
-            twilio_ctx: dict[str, Any] = state.get("twilio_context") or {}
-            sms_to = (twilio_ctx.get("sms") or {}).get("to") or sms_cfg.get("default_to") or ""
+            twilio_sms_ctx: dict[str, Any] = state.get("twilio_sms_context") or {}
+            sms_to = twilio_sms_ctx.get("to") or sms_cfg.get("default_to") or ""
             sms_from = sms_cfg.get("from_number", "")
             messaging_service_sid = sms_cfg.get("messaging_service_sid", "")
             account_sid = twilio_creds.get("account_sid", "")
