@@ -297,7 +297,6 @@ def test_twilio_sms_dispatched_when_enabled(monkeypatch: pytest.MonkeyPatch) -> 
                             "default_to": "+14155550000",
                             "messaging_service_sid": "",
                         },
-                        "whatsapp": {"enabled": False},
                     }
                 }
             )
@@ -336,7 +335,6 @@ def test_twilio_sms_skipped_when_channel_disabled(monkeypatch: pytest.MonkeyPatc
                         "account_sid": "AC1",
                         "auth_token": "tok",
                         "sms": {"enabled": False, "from_number": "+14155551111"},
-                        "whatsapp": {"enabled": False},
                     }
                 }
             )
@@ -371,7 +369,6 @@ def test_twilio_sms_skipped_without_recipient(monkeypatch: pytest.MonkeyPatch) -
                             "default_to": "",
                             "messaging_service_sid": "",
                         },
-                        "whatsapp": {"enabled": False},
                     }
                 }
             )

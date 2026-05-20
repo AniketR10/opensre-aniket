@@ -1,4 +1,4 @@
-"""Tests for unified Twilio integration: config, catalog, verifier."""
+"""Tests for the Twilio SMS integration: config, catalog, verifier."""
 
 from __future__ import annotations
 
@@ -7,11 +7,7 @@ from typing import Any
 import pytest
 
 from app.integrations._verification_adapters import _verify_twilio
-from app.integrations.config_models import (
-    TwilioIntegrationConfig,
-    TwilioSMSChannelConfig,
-    TwilioWhatsAppChannelConfig,
-)
+from app.integrations.config_models import TwilioIntegrationConfig, TwilioSMSChannelConfig
 
 
 class _FakeResponse:
@@ -30,21 +26,10 @@ class _FakeResponse:
 # ---- TwilioIntegrationConfig --------------------------------------------------
 
 
-def test_config_accepts_whatsapp_only() -> None:
+def test_config_accepts_sms_with_from_number() -> None:
     config = TwilioIntegrationConfig(
         account_sid="AC1",
         auth_token="tok",
-        whatsapp=TwilioWhatsAppChannelConfig(enabled=True, from_number="whatsapp:+14155238886"),
-    )
-    assert config.configured_channels == ["whatsapp"]
-    assert config.sms.is_configured is False
-
-
-def test_config_accepts_sms_only() -> None:
-    config = TwilioIntegrationConfig(
-        account_sid="AC1",
-        auth_token="tok",
-        whatsapp=TwilioWhatsAppChannelConfig(enabled=False, from_number=""),
         sms=TwilioSMSChannelConfig(enabled=True, from_number="+14155551111"),
     )
     assert config.configured_channels == ["sms"]
@@ -54,28 +39,25 @@ def test_config_accepts_sms_via_messaging_service_sid() -> None:
     config = TwilioIntegrationConfig(
         account_sid="AC1",
         auth_token="tok",
-        whatsapp=TwilioWhatsAppChannelConfig(enabled=False),
         sms=TwilioSMSChannelConfig(enabled=True, messaging_service_sid="MG1"),
     )
     assert config.configured_channels == ["sms"]
 
 
-def test_config_rejects_zero_channels() -> None:
-    with pytest.raises(ValueError, match="at least one configured channel"):
+def test_config_rejects_missing_sms_channel() -> None:
+    with pytest.raises(ValueError, match="SMS channel configured"):
         TwilioIntegrationConfig(
             account_sid="AC1",
             auth_token="tok",
-            whatsapp=TwilioWhatsAppChannelConfig(enabled=False),
             sms=TwilioSMSChannelConfig(enabled=False),
         )
 
 
 def test_config_rejects_enabled_sms_without_sender() -> None:
-    with pytest.raises(ValueError, match="at least one configured channel"):
+    with pytest.raises(ValueError, match="SMS channel configured"):
         TwilioIntegrationConfig(
             account_sid="AC1",
             auth_token="tok",
-            whatsapp=TwilioWhatsAppChannelConfig(enabled=False),
             sms=TwilioSMSChannelConfig(enabled=True, from_number=""),
         )
 
@@ -113,7 +95,7 @@ def test_verify_missing_auth_token() -> None:
     assert "auth_token" in result["detail"].lower()
 
 
-def test_verify_passed_lists_ready_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_passed_when_sms_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "app.integrations._verification_adapters.requests.get",
         lambda *_a, **_kw: _FakeResponse({"friendly_name": "Demo"}),
@@ -124,17 +106,15 @@ def test_verify_passed_lists_ready_channels(monkeypatch: pytest.MonkeyPatch) -> 
         {
             "account_sid": "AC1",
             "auth_token": "tok",
-            "whatsapp": {"enabled": True, "from_number": "whatsapp:+14155238886"},
             "sms": {"enabled": True, "from_number": "+14155551111"},
         },
     )
 
     assert result["status"] == "passed"
-    assert "whatsapp" in result["detail"]
-    assert "sms" in result["detail"]
+    assert "sms" in result["detail"].lower()
 
 
-def test_verify_failed_when_no_channels_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_passed_with_messaging_service_sid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "app.integrations._verification_adapters.requests.get",
         lambda *_a, **_kw: _FakeResponse({"friendly_name": "Demo"}),
@@ -145,13 +125,30 @@ def test_verify_failed_when_no_channels_ready(monkeypatch: pytest.MonkeyPatch) -
         {
             "account_sid": "AC1",
             "auth_token": "tok",
-            "whatsapp": {"enabled": False, "from_number": ""},
+            "sms": {"enabled": True, "messaging_service_sid": "MG1"},
+        },
+    )
+
+    assert result["status"] == "passed"
+
+
+def test_verify_failed_when_sms_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.integrations._verification_adapters.requests.get",
+        lambda *_a, **_kw: _FakeResponse({"friendly_name": "Demo"}),
+    )
+
+    result = _verify_twilio(
+        "env",
+        {
+            "account_sid": "AC1",
+            "auth_token": "tok",
             "sms": {"enabled": False, "from_number": ""},
         },
     )
 
     assert result["status"] == "failed"
-    assert "no channels are ready" in result["detail"].lower()
+    assert "sms channel is not ready" in result["detail"].lower()
 
 
 def test_verify_failed_when_api_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,8 +173,6 @@ def test_catalog_bootstraps_twilio_from_env_with_sms(
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
     monkeypatch.setenv("TWILIO_SMS_FROM", "+14155551111")
     monkeypatch.setenv("TWILIO_SMS_DEFAULT_TO", "+14155550000")
-    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
-    monkeypatch.setenv("WHATSAPP_DEFAULT_TO", "+14155550000")
 
     from app.integrations.catalog import resolve_effective_integrations
 
@@ -189,19 +184,35 @@ def test_catalog_bootstraps_twilio_from_env_with_sms(
     assert twilio["sms"]["enabled"] is True
     assert twilio["sms"]["from_number"] == "+14155551111"
     assert twilio["sms"]["default_to"] == "+14155550000"
-    assert twilio["whatsapp"]["enabled"] is True
-    # Back-compat: legacy "whatsapp" record is also published.
+    assert "whatsapp" not in twilio
+
+
+def test_catalog_bootstraps_legacy_whatsapp_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy ``whatsapp`` record is unaffected by the Twilio SMS integration."""
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC1")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    monkeypatch.delenv("TWILIO_SMS_FROM", raising=False)
+    monkeypatch.delenv("TWILIO_SMS_MESSAGING_SERVICE_SID", raising=False)
+
+    from app.integrations.catalog import resolve_effective_integrations
+
+    effective = resolve_effective_integrations()
+
     assert "whatsapp" in effective
+    # WhatsApp-only env does NOT create a twilio record (SMS sender absent).
+    assert "twilio" not in effective
 
 
-def test_catalog_skips_twilio_without_any_channel_env(
+def test_catalog_skips_twilio_without_sms_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC1")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
     monkeypatch.delenv("TWILIO_SMS_FROM", raising=False)
     monkeypatch.delenv("TWILIO_SMS_MESSAGING_SERVICE_SID", raising=False)
-    monkeypatch.delenv("TWILIO_WHATSAPP_FROM", raising=False)
 
     from app.integrations.catalog import resolve_effective_integrations
 

@@ -6,11 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.utils.twilio_delivery import (
-    post_twilio_message,
-    send_twilio_sms_report,
-    send_twilio_whatsapp_report,
-)
+from app.utils.twilio_delivery import post_twilio_message, send_twilio_sms_report
 
 
 class _Resp:
@@ -221,23 +217,3 @@ def test_send_twilio_sms_report_missing_sender() -> None:
     assert success is False
     assert "from_number" in error
     assert sid == ""
-
-
-def test_send_twilio_whatsapp_report_truncates_at_4096(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _patch_post(monkeypatch, _Resp({"sid": "SM7"}))
-
-    send_twilio_whatsapp_report(
-        report="Y" * 9000,
-        whatsapp_ctx={
-            "account_sid": "AC1",
-            "auth_token": "tok",
-            "from_number": "+14155238886",
-            "to": "+14155550000",
-        },
-    )
-
-    assert len(captured["data"]["Body"]) <= 4096
-    assert captured["data"]["Body"].endswith("…")
-    assert captured["data"]["To"].startswith("whatsapp:")

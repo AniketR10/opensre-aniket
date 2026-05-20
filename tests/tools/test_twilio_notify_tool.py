@@ -21,7 +21,6 @@ def twilio_source() -> dict[str, Any]:
                 "messaging_service_sid": "",
                 "default_to": "+14155550000",
             },
-            "whatsapp": {"enabled": False},
         }
     }
 

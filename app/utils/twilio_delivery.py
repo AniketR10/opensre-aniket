@@ -1,8 +1,9 @@
-"""Twilio multi-channel delivery helpers (WhatsApp + SMS).
+"""Twilio delivery helpers (SMS + WhatsApp transport).
 
-Single shared transport for posting Twilio Messaging API requests. WhatsApp
-prefixes are applied automatically when the channel is ``whatsapp``; SMS
-uses the raw E.164 number or a Messaging Service SID.
+Single shared transport for posting Twilio Messaging API requests. SMS uses
+the raw E.164 number or a Messaging Service SID; the ``whatsapp`` channel
+applies the ``whatsapp:`` prefix and exists so the standalone ``whatsapp``
+integration can reuse this transport.
 """
 
 from __future__ import annotations
@@ -141,34 +142,5 @@ def send_twilio_sms_report(
         auth_token=auth_token,
         from_number=from_number,
         messaging_service_sid=messaging_service_sid,
-        status_callback=status_callback,
-    )
-
-
-def send_twilio_whatsapp_report(
-    report: str,
-    whatsapp_ctx: dict[str, Any],
-) -> tuple[bool, str, str]:
-    """Send a truncated report as WhatsApp via Twilio.
-
-    Returns ``(success, error, message_sid)``.
-    """
-    account_sid = str(whatsapp_ctx.get("account_sid") or "")
-    auth_token = str(whatsapp_ctx.get("auth_token") or "")
-    to = str(whatsapp_ctx.get("to") or "")
-    from_number = str(whatsapp_ctx.get("from_number") or "")
-    status_callback = str(whatsapp_ctx.get("status_callback") or "")
-
-    if not account_sid or not auth_token or not from_number or not to:
-        return False, "Missing account_sid, auth_token, from_number, or to", ""
-
-    text = truncate(report, _WHATSAPP_LIMIT, suffix="…")
-    return post_twilio_message(
-        channel="whatsapp",
-        to=to,
-        text=text,
-        account_sid=account_sid,
-        auth_token=auth_token,
-        from_number=from_number,
         status_callback=status_callback,
     )

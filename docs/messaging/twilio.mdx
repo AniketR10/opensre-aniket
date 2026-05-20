@@ -1,21 +1,19 @@
 ---
-title: "Twilio (multi-channel)"
-description: "Deliver investigation findings via Twilio across WhatsApp and SMS as separately selectable channels."
+title: "Twilio (SMS)"
+description: "Deliver investigation findings via Twilio SMS as a standalone, independently configurable channel."
 ---
 
-OpenSRE's unified Twilio integration delivers investigation findings across
-multiple Twilio channels using one set of credentials. **WhatsApp** and
-**SMS** are independently selectable. For voice paging on critical
-incidents, route through PagerDuty or Opsgenie — both already provide
-voice escalation with proper acknowledgement, and OpenSRE integrates
-with them.
+OpenSRE's Twilio integration delivers investigation findings via **SMS**
+using the Twilio Messaging API. It is configured independently of the
+existing `whatsapp` integration, though both can share the same Twilio
+account credentials.
 
 <Note>
-The legacy `whatsapp` integration is preserved unchanged for back-compat.
-Configure `twilio` when you want SMS, or want WhatsApp + SMS sharing one
-record. Configuring both `whatsapp` and `twilio.whatsapp` will only send
-WhatsApp via the legacy `whatsapp` path (to avoid duplicate sends); the
-follow-up PRs will collapse them.
+WhatsApp delivery is owned entirely by the separate `whatsapp` integration
+(`opensre integrations setup whatsapp`) — see the [WhatsApp](/messaging/whatsapp)
+page. The `twilio` integration documented here is SMS-only. For voice
+paging on critical incidents, route through PagerDuty or Opsgenie, which
+provide voice escalation with proper acknowledgement.
 </Note>
 
 ---
@@ -23,9 +21,7 @@ follow-up PRs will collapse them.
 ## Prerequisites
 
 - A Twilio account: [Sign up](https://www.twilio.com/try-twilio).
-- For SMS: a Twilio-provisioned phone number **or** a Messaging Service SID.
-- For WhatsApp: the Twilio WhatsApp Sandbox (for demos) or a production
-  WhatsApp-enabled sender.
+- A Twilio-provisioned phone number **or** a Messaging Service SID.
 
 ---
 
@@ -41,15 +37,9 @@ You'll be prompted for:
 
 - **Twilio Account SID** (starts with `AC...`)
 - **Twilio Auth Token**
-- **Enable WhatsApp channel?** → if yes:
-  - `from_number`, e.g. `whatsapp:+14155238886`
-  - optional default recipient
-- **Enable SMS channel?** → if yes:
-  - `from_number` (E.164, e.g. `+14155551234`) **or** a Messaging Service SID
-    (starts with `MG...`)
-  - optional default recipient
-
-At least one channel must be enabled.
+- **Twilio SMS From number** (E.164, e.g. `+14155551234`) — or leave blank
+  and provide a **Messaging Service SID** (starts with `MG...`)
+- optional **default recipient**
 
 ### Via environment variables
 
@@ -59,20 +49,16 @@ Add to your `.env` file:
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=your_auth_token
 
-# WhatsApp channel (optional)
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-WHATSAPP_DEFAULT_TO=+1234567890
-
-# SMS channel (optional) — set either TWILIO_SMS_FROM or TWILIO_SMS_MESSAGING_SERVICE_SID
+# Set either TWILIO_SMS_FROM or TWILIO_SMS_MESSAGING_SERVICE_SID
 TWILIO_SMS_FROM=+14155551234
 TWILIO_SMS_MESSAGING_SERVICE_SID=
 TWILIO_SMS_DEFAULT_TO=+1234567890
 ```
 
-The unified `twilio` env-bootstrap activates when account+token are set
-and at least one channel-specific FROM is present. The legacy
-`whatsapp` record continues to be bootstrapped independently from
-`TWILIO_WHATSAPP_FROM` for back-compat.
+The `twilio` env-bootstrap activates when the account + token are set and
+an SMS sender (`TWILIO_SMS_FROM` or `TWILIO_SMS_MESSAGING_SERVICE_SID`) is
+present. The legacy `whatsapp` record is bootstrapped independently from
+`TWILIO_WHATSAPP_FROM`.
 
 ---
 
@@ -85,17 +71,18 @@ opensre integrations verify twilio
 A passing verification confirms:
 
 - The Twilio account credentials authenticate against the Twilio Account API.
-- At least one channel (`whatsapp`, `sms`) is enabled and has a usable
-  sender (`from_number` or `messaging_service_sid`).
+- The SMS channel is enabled and has a usable sender (`from_number` or
+  `messaging_service_sid`).
 
 Sample passing output:
 
 ```
-twilio: passed — Connected to Twilio account My Company; channels ready: whatsapp, sms.
+twilio: passed — Connected to Twilio account My Company; SMS channel ready.
 ```
 
-If the account authenticates but no channel is ready, verification
-returns `failed` with a clear message telling you to enable a channel.
+If the account authenticates but the SMS channel has no sender,
+verification returns `failed` with a message telling you to set a
+`from_number` or `messaging_service_sid`.
 
 ---
 
@@ -107,21 +94,17 @@ Trigger a real investigation against a bundled fixture:
 opensre investigate --input tests/e2e/kubernetes/fixtures/datadog_k8s_alert.json
 ```
 
-When the investigation finishes:
-
-- **WhatsApp**: delivered by the existing `whatsapp` path (back-compat).
-- **SMS**: delivered by the new Twilio `sms` channel — the report is
-  truncated to the SMS body limit (1600 chars) and posted via the
-  Twilio Messaging API.
+When the investigation finishes, the RCA summary is truncated to the SMS
+body limit (1600 chars) and posted via the Twilio Messaging API to the
+configured recipient.
 
 ---
 
 ## Programmatic notifications: `twilio_notify` tool
 
-When the unified Twilio integration is configured with SMS enabled, the
-investigation planner exposes a `twilio_notify` tool. The tool sends a
-short notification body via SMS and returns the Twilio Message SID for
-traceability.
+When the Twilio integration is configured, the investigation planner
+exposes a `twilio_notify` tool. The tool sends a short notification body
+via SMS and returns the Twilio Message SID for traceability.
 
 ```json
 {
@@ -144,7 +127,7 @@ traceability.
 | `Missing account_sid` | `TWILIO_ACCOUNT_SID` is unset. |
 | `Missing auth_token` | `TWILIO_AUTH_TOKEN` is unset. |
 | `Twilio API check failed: 401` | The SID/token pair is invalid. |
-| `no channels are ready` | All channels disabled or missing sender — enable WhatsApp or SMS and set a `from_number`. |
+| `SMS channel is not ready` | No SMS sender — set `TWILIO_SMS_FROM` or `TWILIO_SMS_MESSAGING_SERVICE_SID`. |
 
 ### SMS never arrives but verify passes
 
@@ -155,10 +138,3 @@ traceability.
 - Inspect `Messages` in the Twilio Console for an error code; common
   failures (`30007`, `21610`, etc.) are documented at
   [twilio.com/docs/api/errors](https://www.twilio.com/docs/api/errors).
-
-### WhatsApp never arrives but verify passes
-
-- For sandbox usage, join the Twilio sandbox from the destination
-  WhatsApp number first.
-- Ensure `from_number` carries the `whatsapp:` prefix (the wizard adds
-  it; env vars must include it).

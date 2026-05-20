@@ -208,10 +208,8 @@ def generate_report(state: InvestigationState) -> dict:
     else:
         logger.debug("[publish] whatsapp delivery: no whatsapp integration configured")
 
-    # Twilio multi-channel — dispatches SMS independently of the legacy
-    # WhatsApp record above. The WhatsApp channel inside twilio is
-    # intentionally NOT dispatched here to avoid duplicate sends for
-    # users who keep both ``whatsapp`` and ``twilio.whatsapp`` configured.
+    # Twilio SMS — dispatched independently of the legacy WhatsApp record
+    # above. WhatsApp delivery is owned solely by the ``whatsapp`` integration.
     twilio_creds = resolved.get("twilio", {})
     if twilio_creds:
         sms_cfg = twilio_creds.get("sms") or {}

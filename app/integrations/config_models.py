@@ -714,11 +714,11 @@ class TelegramBotConfig(StrictConfigModel):
 
 
 class WhatsAppConfig(StrictConfigModel):
-    """Twilio WhatsApp runtime config (legacy single-channel shape).
+    """Twilio WhatsApp runtime config.
 
-    Back-compat alias of the WhatsApp channel inside the unified
-    :class:`TwilioIntegrationConfig`. Existing ``whatsapp`` records resolve
-    through this shape unchanged.
+    WhatsApp delivery is owned entirely by the standalone ``whatsapp``
+    integration. The unified :class:`TwilioIntegrationConfig` adds SMS as a
+    separate channel and intentionally does NOT duplicate WhatsApp.
     """
 
     account_sid: str
@@ -755,21 +755,6 @@ class WhatsAppConfig(StrictConfigModel):
         return stripped
 
 
-class TwilioWhatsAppChannelConfig(StrictConfigModel):
-    """WhatsApp channel sub-config inside a unified Twilio integration."""
-
-    enabled: bool = True
-    from_number: str = ""
-    default_to: str | None = None
-
-    _normalize_from_number = field_validator("from_number", mode="before")(normalize_str())
-    _normalize_enabled = field_validator("enabled", mode="before")(normalize_bool_str())
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.enabled and self.from_number)
-
-
 class TwilioSMSChannelConfig(StrictConfigModel):
     """SMS channel sub-config inside a unified Twilio integration.
 
@@ -794,15 +779,15 @@ class TwilioSMSChannelConfig(StrictConfigModel):
 
 
 class TwilioIntegrationConfig(StrictConfigModel):
-    """Unified Twilio runtime config with per-channel sub-configs.
+    """Unified Twilio runtime config.
 
-    Exposes WhatsApp and SMS channels as independently selectable
-    under one set of Twilio account credentials.
+    Adds SMS as a Twilio-backed outbound channel. WhatsApp is owned by the
+    standalone ``whatsapp`` integration and is intentionally not duplicated
+    here. Both can share the same Twilio account credentials.
     """
 
     account_sid: str
     auth_token: str
-    whatsapp: TwilioWhatsAppChannelConfig = Field(default_factory=TwilioWhatsAppChannelConfig)
     sms: TwilioSMSChannelConfig = Field(default_factory=TwilioSMSChannelConfig)
     identity_policy: dict[str, object] | None = Field(
         default=None,
@@ -827,22 +812,17 @@ class TwilioIntegrationConfig(StrictConfigModel):
         return stripped
 
     @model_validator(mode="after")
-    def _require_at_least_one_channel(self) -> TwilioIntegrationConfig:
-        if not (self.whatsapp.is_configured or self.sms.is_configured):
+    def _require_sms_channel(self) -> TwilioIntegrationConfig:
+        if not self.sms.is_configured:
             raise ValueError(
-                "Twilio integration requires at least one configured channel "
-                "(whatsapp or sms with from_number and enabled=true)."
+                "Twilio integration requires the SMS channel configured "
+                "(enabled=true with a from_number or messaging_service_sid)."
             )
         return self
 
     @property
     def configured_channels(self) -> list[str]:
-        channels: list[str] = []
-        if self.whatsapp.is_configured:
-            channels.append("whatsapp")
-        if self.sms.is_configured:
-            channels.append("sms")
-        return channels
+        return ["sms"] if self.sms.is_configured else []
 
 
 class SlackBotConfig(StrictConfigModel):

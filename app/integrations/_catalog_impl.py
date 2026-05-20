@@ -494,7 +494,6 @@ def _classify_service_instance(
                 {
                     "account_sid": credentials.get("account_sid", ""),
                     "auth_token": credentials.get("auth_token", ""),
-                    "whatsapp": credentials.get("whatsapp", {}),
                     "sms": credentials.get("sms", {}),
                     "integration_id": record_id,
                 }
@@ -1368,27 +1367,17 @@ def load_env_integrations() -> list[dict[str, Any]]:
         )
         integrations.append(_active_env_record("whatsapp", wa_config.model_dump()))
 
-    # Unified Twilio multi-channel — independent of the legacy WhatsApp record.
-    # The env wizard hydrates Twilio when account+token are present AND at least
-    # one channel-specific FROM number is set.
+    # Twilio SMS integration — independent of the legacy WhatsApp record.
+    # Hydrated when account+token are present AND an SMS sender is set
+    # (a from_number or a Messaging Service SID).
     twilio_sms_from = os.getenv("TWILIO_SMS_FROM", "").strip()
     twilio_sms_messaging_service = os.getenv("TWILIO_SMS_MESSAGING_SERVICE_SID", "").strip()
-    twilio_whatsapp_from = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
-    if (
-        wa_account_sid
-        and wa_auth_token
-        and (twilio_sms_from or twilio_sms_messaging_service or twilio_whatsapp_from)
-    ):
+    if wa_account_sid and wa_auth_token and (twilio_sms_from or twilio_sms_messaging_service):
         twilio_payload: dict[str, Any] = {
             "account_sid": wa_account_sid,
             "auth_token": wa_auth_token,
-            "whatsapp": {
-                "enabled": bool(twilio_whatsapp_from),
-                "from_number": twilio_whatsapp_from,
-                "default_to": os.getenv("WHATSAPP_DEFAULT_TO", "").strip() or None,
-            },
             "sms": {
-                "enabled": bool(twilio_sms_from or twilio_sms_messaging_service),
+                "enabled": True,
                 "from_number": twilio_sms_from,
                 "messaging_service_sid": twilio_sms_messaging_service,
                 "default_to": os.getenv("TWILIO_SMS_DEFAULT_TO", "").strip() or None,

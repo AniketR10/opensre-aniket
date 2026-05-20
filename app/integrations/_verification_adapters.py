@@ -375,13 +375,12 @@ def _verify_whatsapp(source: str, config: dict[str, Any]) -> dict[str, str]:
 
 
 def _verify_twilio(source: str, config: dict[str, Any]) -> dict[str, str]:
-    """Verify unified Twilio integration: account auth + per-channel readiness.
+    """Verify the Twilio integration: account auth + SMS channel readiness.
 
-    A "passed" result lists every channel that is enabled with a usable
-    sender (WhatsApp ``from_number`` / SMS ``from_number`` or
-    ``messaging_service_sid``). A configured account with zero channels
-    ready is reported as ``failed`` so the user gets a clear signal that
-    nothing will deliver.
+    A "passed" result confirms the account credentials authenticate and the
+    SMS channel has a usable sender (``from_number`` or
+    ``messaging_service_sid``). WhatsApp is verified separately via the
+    standalone ``whatsapp`` integration.
     """
     account_sid = str(config.get("account_sid", "")).strip()
     auth_token = str(config.get("auth_token", "")).strip()
@@ -403,25 +402,20 @@ def _verify_twilio(source: str, config: dict[str, Any]) -> dict[str, str]:
 
     friendly_name = str(payload.get("friendly_name", "")).strip() or account_sid
 
-    whatsapp_cfg = config.get("whatsapp") or {}
     sms_cfg = config.get("sms") or {}
-    ready: list[str] = []
-    if whatsapp_cfg.get("enabled") and str(whatsapp_cfg.get("from_number") or "").strip():
-        ready.append("whatsapp")
-    if sms_cfg.get("enabled") and (
+    sms_ready = bool(sms_cfg.get("enabled")) and bool(
         str(sms_cfg.get("from_number") or "").strip()
         or str(sms_cfg.get("messaging_service_sid") or "").strip()
-    ):
-        ready.append("sms")
+    )
 
-    if not ready:
+    if not sms_ready:
         return result(
             "twilio",
             source,
             "failed",
             (
-                f"Connected to Twilio account {friendly_name} but no channels are ready. "
-                "Enable WhatsApp or SMS and set a from_number."
+                f"Connected to Twilio account {friendly_name} but the SMS channel "
+                "is not ready. Enable SMS and set a from_number or messaging_service_sid."
             ),
         )
 
@@ -429,7 +423,7 @@ def _verify_twilio(source: str, config: dict[str, Any]) -> dict[str, str]:
         "twilio",
         source,
         "passed",
-        f"Connected to Twilio account {friendly_name}; channels ready: {', '.join(ready)}.",
+        f"Connected to Twilio account {friendly_name}; SMS channel ready.",
     )
 
 
