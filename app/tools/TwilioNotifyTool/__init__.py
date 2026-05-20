@@ -2,8 +2,7 @@
 
 Lets the agent push a short SMS notification through a configured
 Twilio integration. The investigation planner exposes this tool
-whenever a Twilio integration is configured with the SMS channel
-enabled.
+whenever a Twilio integration with the SMS channel enabled exists.
 """
 
 from __future__ import annotations
@@ -61,33 +60,45 @@ class TwilioNotifyTool(BaseTool):
             sms.get("enabled") and (sms.get("from_number") or sms.get("messaging_service_sid"))
         )
 
-    def extract_params(self, sources: dict[str, Any]) -> dict[str, Any]:
-        twilio = sources.get("twilio") or {}
-        sms = twilio.get("sms") or {}
-        return {
-            "_account_sid": twilio.get("account_sid", ""),
-            "_auth_token": twilio.get("auth_token", ""),
-            "_from_number": sms.get("from_number", ""),
-            "_messaging_service_sid": sms.get("messaging_service_sid", ""),
-            "to": sms.get("default_to") or "",
-        }
+    # NOTE: extract_params is intentionally NOT overridden. Anything it returns
+    # is merged into the kwargs passed to run() and recorded in tool-call
+    # execution traces/logs. Twilio credentials must never travel that path, so
+    # run() resolves them itself from the integration store instead.
 
     def run(
         self,
         body: str,
         to: str = "",
-        _account_sid: str = "",
-        _auth_token: str = "",
-        _from_number: str = "",
-        _messaging_service_sid: str = "",
         **_kwargs: Any,
     ) -> dict[str, Any]:
-        if not _account_sid or not _auth_token:
+        # Resolve Twilio credentials here rather than receiving them as kwargs:
+        # run() kwargs are recorded in tool-call traces/logs, so account_sid /
+        # auth_token must stay out of the call signature entirely.
+        from app.integrations.catalog import resolve_effective_integrations
+
+        entry = resolve_effective_integrations().get("twilio") or {}
+        twilio = entry.get("config") or {}
+        sms = twilio.get("sms") or {}
+        account_sid = str(twilio.get("account_sid") or "")
+        auth_token = str(twilio.get("auth_token") or "")
+        from_number = str(sms.get("from_number") or "")
+        messaging_service_sid = str(sms.get("messaging_service_sid") or "")
+        to = to or str(sms.get("default_to") or "")
+
+        if not account_sid or not auth_token:
             return {
                 "source": "twilio",
                 "available": False,
                 "status": "failed",
                 "error": "Twilio integration is not configured.",
+                "sid": "",
+            }
+        if not (from_number or messaging_service_sid):
+            return {
+                "source": "twilio",
+                "available": True,
+                "status": "failed",
+                "error": "Twilio SMS channel has no from_number or messaging_service_sid.",
                 "sid": "",
             }
         if not to:
@@ -98,22 +109,14 @@ class TwilioNotifyTool(BaseTool):
                 "error": "No recipient — pass 'to' or configure sms.default_to.",
                 "sid": "",
             }
-        if not (_from_number or _messaging_service_sid):
-            return {
-                "source": "twilio",
-                "available": True,
-                "status": "failed",
-                "error": "Twilio SMS channel has no from_number or messaging_service_sid.",
-                "sid": "",
-            }
 
         ok, error, sid = send_twilio_sms_report(
             body,
             {
-                "account_sid": _account_sid,
-                "auth_token": _auth_token,
-                "from_number": _from_number,
-                "messaging_service_sid": _messaging_service_sid,
+                "account_sid": account_sid,
+                "auth_token": auth_token,
+                "from_number": from_number,
+                "messaging_service_sid": messaging_service_sid,
                 "to": to,
             },
         )
