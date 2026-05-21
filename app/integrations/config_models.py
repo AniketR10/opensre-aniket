@@ -789,10 +789,6 @@ class TwilioIntegrationConfig(StrictConfigModel):
     account_sid: str
     auth_token: str
     sms: TwilioSMSChannelConfig = Field(default_factory=TwilioSMSChannelConfig)
-    identity_policy: dict[str, object] | None = Field(
-        default=None,
-        description="Messaging identity policy for inbound security (MessagingIdentityPolicy shape)",
-    )
     integration_id: str = ""
 
     @field_validator("account_sid", mode="before")

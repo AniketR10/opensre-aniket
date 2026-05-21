@@ -259,13 +259,19 @@ def generate_report(state: InvestigationState) -> dict:
                         sms_error,
                     )
             else:
-                logger.debug(
-                    "[publish] twilio sms delivery: skipped — "
-                    "account_sid_present=%s auth_token_present=%s to_present=%s sender_present=%s",
-                    bool(account_sid),
-                    bool(auth_token),
+                # SMS channel is enabled but something required for delivery
+                # is missing — most commonly no recipient (default_to unset and
+                # no runtime twilio_sms_context.to). Warn so the misconfig is
+                # visible rather than silently swallowed.
+                logger.warning(
+                    "[publish] twilio sms delivery: skipped — SMS channel is enabled "
+                    "but not deliverable (recipient_present=%s sender_present=%s "
+                    "account_sid_present=%s auth_token_present=%s). "
+                    "Set TWILIO_SMS_DEFAULT_TO to enable auto-delivery.",
                     bool(sms_to),
                     bool(sms_from or messaging_service_sid),
+                    bool(account_sid),
+                    bool(auth_token),
                 )
     else:
         logger.debug("[publish] twilio delivery: no twilio integration configured")

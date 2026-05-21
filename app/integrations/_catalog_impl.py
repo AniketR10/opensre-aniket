@@ -1353,15 +1353,18 @@ def load_env_integrations() -> list[dict[str, Any]]:
         )
         integrations.append(_active_env_record("telegram", tg_config.model_dump()))
 
-    wa_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-    wa_auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-    wa_from_number = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
-    if wa_account_sid and wa_auth_token and wa_from_number:
+    # Shared Twilio account credentials — consumed by both the WhatsApp and
+    # the SMS env-bootstrap blocks below.
+    twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+    twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+
+    whatsapp_from_number = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
+    if twilio_account_sid and twilio_auth_token and whatsapp_from_number:
         wa_config = WhatsAppConfig.model_validate(
             {
-                "account_sid": wa_account_sid,
-                "auth_token": wa_auth_token,
-                "from_number": wa_from_number,
+                "account_sid": twilio_account_sid,
+                "auth_token": twilio_auth_token,
+                "from_number": whatsapp_from_number,
                 "default_to": os.getenv("WHATSAPP_DEFAULT_TO", "").strip() or None,
             }
         )
@@ -1372,10 +1375,14 @@ def load_env_integrations() -> list[dict[str, Any]]:
     # (a from_number or a Messaging Service SID).
     twilio_sms_from = os.getenv("TWILIO_SMS_FROM", "").strip()
     twilio_sms_messaging_service = os.getenv("TWILIO_SMS_MESSAGING_SERVICE_SID", "").strip()
-    if wa_account_sid and wa_auth_token and (twilio_sms_from or twilio_sms_messaging_service):
+    if (
+        twilio_account_sid
+        and twilio_auth_token
+        and (twilio_sms_from or twilio_sms_messaging_service)
+    ):
         twilio_payload: dict[str, Any] = {
-            "account_sid": wa_account_sid,
-            "auth_token": wa_auth_token,
+            "account_sid": twilio_account_sid,
+            "auth_token": twilio_auth_token,
             "sms": {
                 "enabled": True,
                 "from_number": twilio_sms_from,
