@@ -1042,13 +1042,6 @@ Thanks goes to these amazing people:
         </a>
     </td>
             <td align="center">
-        <a href="https://github.com/Gingiris">
-            <img src="https://avatars.githubusercontent.com/u/260675847?v=4" width="100" alt="Gingiris"/>
-            <br />
-            <sub><b>Gingiris</b></sub>
-        </a>
-    </td>
-            <td align="center">
         <a href="https://github.com/rameshkumarkoyya">
             <img src="https://avatars.githubusercontent.com/u/109403918?v=4" width="100" alt="rameshkumarkoyya"/>
             <br />
@@ -1069,8 +1062,6 @@ Thanks goes to these amazing people:
             <sub><b>Genmin</b></sub>
         </a>
     </td>
-		</tr>
-		<tr>
             <td align="center">
         <a href="https://github.com/WatchTree-19">
             <img src="https://avatars.githubusercontent.com/u/119982314?v=4" width="100" alt="WatchTree-19"/>
@@ -1078,6 +1069,8 @@ Thanks goes to these amazing people:
             <sub><b>WatchTree-19</b></sub>
         </a>
     </td>
+		</tr>
+		<tr>
             <td align="center">
         <a href="https://github.com/cokerrd">
             <img src="https://avatars.githubusercontent.com/u/82083946?v=4" width="100" alt="cokerrd"/>
@@ -1113,8 +1106,6 @@ Thanks goes to these amazing people:
             <sub><b>CoderHariswar</b></sub>
         </a>
     </td>
-		</tr>
-		<tr>
             <td align="center">
         <a href="https://github.com/zeesshhh0">
             <img src="https://avatars.githubusercontent.com/u/87911619?v=4" width="100" alt="zeesshhh0"/>
@@ -1122,6 +1113,8 @@ Thanks goes to these amazing people:
             <sub><b>zeesshhh0</b></sub>
         </a>
     </td>
+		</tr>
+		<tr>
             <td align="center">
         <a href="https://github.com/PrakharJain345">
             <img src="https://avatars.githubusercontent.com/u/171273173?v=4" width="100" alt="PrakharJain345"/>
@@ -1157,8 +1150,6 @@ Thanks goes to these amazing people:
             <sub><b>DsThakurRawat</b></sub>
         </a>
     </td>
-		</tr>
-		<tr>
             <td align="center">
         <a href="https://github.com/akshat1074">
             <img src="https://avatars.githubusercontent.com/u/138868940?v=4" width="100" alt="akshat1074"/>
@@ -1166,6 +1157,8 @@ Thanks goes to these amazing people:
             <sub><b>akshat1074</b></sub>
         </a>
     </td>
+		</tr>
+		<tr>
             <td align="center">
         <a href="https://github.com/Diwansu-pilania">
             <img src="https://avatars.githubusercontent.com/u/192974860?v=4" width="100" alt="Diwansu-pilania"/>
