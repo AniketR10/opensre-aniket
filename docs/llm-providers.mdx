@@ -22,6 +22,7 @@ OpenSRE is provider-agnostic: bring your own model. Selection is controlled by t
 | Claude Code CLI| `claude-code`| `claude login` (CLI)            | Claude Code CLI default                       | Claude Code CLI default                         |
 | GitHub Copilot CLI| `copilot`| `copilot login` or `gh auth login` (CLI) | Copilot CLI default                           | Copilot CLI default                             |
 | Google Antigravity CLI| `antigravity-cli`| `agy` (browser OAuth, OS keyring) | Whatever the local `agy` config is set to (switch via `/models` inside agy) | same as reasoning model |
+| xAI Grok Build CLI| `grok-cli`| `grok login` or `XAI_API_KEY` | Grok Build CLI default                        | Grok Build CLI default                          |
 
 OpenSRE distinguishes two model slots per provider:
 
@@ -268,6 +269,41 @@ Antigravity CLI (`agy`) is Google's successor to Gemini CLI. Install via `curl -
 As a best-effort fallback, the probe treats explicit `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` env credentials as authenticated (mirroring the Gemini CLI adapter), so users migrating across the two CLIs can keep their existing env-var-based auth without re-running the browser flow.
 
 Invocations run as `agy -p PROMPT --print-timeout {N}s`. The adapter never passes `--continue` / `--conversation` / `--sandbox` / `--dangerously-skip-permissions`, keeping every opensre call ephemeral.
+
+### xAI Grok Build CLI
+
+```bash
+export LLM_PROVIDER=grok-cli
+# Authenticate the Grok Build CLI separately. Either path works:
+grok login                 # OAuth sign-in with a SuperGrok / X Premium+ account
+# ...or, for headless / CI runs, use an API key instead of a browser login:
+export XAI_API_KEY=xai-...  # get one from the xAI console
+# Optional overrides (all blank-by-default):
+export GROK_CLI_MODEL=          # e.g. grok-build-0.1; unset → CLI's configured default
+export GROK_CLI_BIN=            # explicit path to the `grok` binary
+export GROK_CLI_TIMEOUT_SECONDS=300   # default 300; clamped 30–600
+```
+
+Requires the [xAI Grok Build CLI](https://x.ai/cli) (binary: `grok`). Install with
+`curl -fsSL https://x.ai/cli/install.sh | bash` (macOS/Linux) or
+`irm https://x.ai/cli/install.ps1 | iex` (Windows). If `GROK_CLI_MODEL` is unset, OpenSRE
+omits `-m` and the CLI uses its configured default. If `GROK_CLI_BIN` is unset, the binary
+is resolved via `PATH` and known install locations.
+
+Invocations run as `grok -p PROMPT --output-format plain --no-auto-update` (plus `-m MODEL`
+when set), so each opensre call is a single non-interactive turn. The adapter deliberately
+omits `--always-approve`: OpenSRE drives its own tools, so Grok is used purely as a text
+responder and never auto-executes shell commands or file edits.
+
+**Auth detection caveat:** Grok Build has no documented `grok auth status` command, so
+detection is best-effort. `XAI_API_KEY` is treated as authenticated; otherwise a persisted
+`grok login` session credential file under `~/.grok-build` or `~/.grok` counts as
+authenticated. `XAI_API_KEY` is a secret and is forwarded **only** to the Grok subprocess
+(never via the shared CLI env allowlist), so it cannot leak into other CLI adapters. The
+runner re-verifies auth at invoke time.
+
+> **Not to be confused with `groq`.** The `grok-cli` provider is xAI's Grok Build CLI. The
+> separate `groq` provider is the Groq HTTP API (a different company); the two are unrelated.
 
 See [`app/integrations/llm_cli/AGENTS.md`](https://github.com/Tracer-Cloud/opensre/blob/main/app/integrations/llm_cli/AGENTS.md) for the adapter pattern used to add new CLI providers.
 

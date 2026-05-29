@@ -406,6 +406,24 @@ def _copilot_adapter_factory() -> LLMCLIAdapter:
     return CopilotAdapter()
 
 
+def _grok_cli_adapter_factory() -> LLMCLIAdapter:
+    from app.integrations.llm_cli.grok_cli import GrokCLIAdapter
+
+    return GrokCLIAdapter()
+
+
+# Empty value means "no -m" so the Grok Build CLI uses its configured default
+# model. Grok Build is in beta and its public model slugs are still moving, so we
+# keep the curated list minimal and rely on the custom-ID escape hatch.
+GROK_CLI_MODELS = (
+    ModelOption(
+        value="",
+        label="CLI default (no -m; use Grok Build configured model)",
+    ),
+    ModelOption(value="grok-build-0.1", label="grok-build-0.1"),
+)
+
+
 KIMI_MODELS = (
     ModelOption(
         value="",
@@ -644,6 +662,19 @@ SUPPORTED_PROVIDERS = (
         credential_kind="cli",
         credential_secret=False,
         adapter_factory=_copilot_adapter_factory,
+        allow_custom_models=True,
+    ),
+    ProviderOption(
+        value="grok-cli",
+        label="xAI Grok Build CLI",
+        group="Local CLI providers",
+        api_key_env="",
+        model_env="GROK_CLI_MODEL",
+        default_model="",
+        models=GROK_CLI_MODELS,
+        credential_kind="cli",
+        credential_secret=False,
+        adapter_factory=_grok_cli_adapter_factory,
         allow_custom_models=True,
     ),
     ProviderOption(
