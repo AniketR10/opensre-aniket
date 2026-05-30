@@ -88,6 +88,7 @@ def _grok_env_overrides() -> dict[str, str]:
 
 def _grok_session_authenticated() -> tuple[bool | None, str]:
     """Best-effort check for a persisted ``grok login`` session credential file."""
+    unreadable = False
     for dirname in _GROK_CONFIG_DIRNAMES:
         config_dir = Path.home() / dirname
         for filename in _GROK_SESSION_FILES:
@@ -96,7 +97,13 @@ def _grok_session_authenticated() -> tuple[bool | None, str]:
                 if creds.exists() and creds.stat().st_size > 2:
                     return True, f"Authenticated via grok login session (~/{dirname}/{filename})."
             except OSError:
-                return None, "Could not read Grok session credentials; auth state unclear."
+                # One unreadable candidate (e.g. restricted perms) must not abandon
+                # the remaining files/dirs; keep scanning and only fall back to
+                # "unclear" if nothing else resolves.
+                unreadable = True
+                continue
+    if unreadable:
+        return None, "Could not read Grok session credentials; auth state unclear."
     return False, f"Not logged in. {_AUTH_HINT}"
 
 
