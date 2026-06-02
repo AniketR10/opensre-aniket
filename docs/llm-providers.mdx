@@ -296,11 +296,12 @@ omits `--always-approve`: OpenSRE drives its own tools, so Grok is used purely a
 responder and never auto-executes shell commands or file edits.
 
 **Auth detection caveat:** Grok Build has no documented `grok auth status` command, so
-detection is best-effort. `XAI_API_KEY` is treated as authenticated; otherwise a persisted
-`grok login` session credential file under `~/.grok-build` or `~/.grok` counts as
-authenticated. `XAI_API_KEY` is a secret and is forwarded **only** to the Grok subprocess
-(never via the shared CLI env allowlist), so it cannot leak into other CLI adapters. The
-runner re-verifies auth at invoke time.
+detection is best-effort and prioritizes the subscription path. A persisted `grok login`
+session credential file under `~/.grok/auth`, `~/.grok`, or `~/.grok-build` is treated as
+authenticated; otherwise `XAI_API_KEY` counts as authenticated (headless / CI fallback).
+`XAI_API_KEY` is a secret and is forwarded **only** to the Grok subprocess (never via the
+shared CLI env allowlist), so it cannot leak into other CLI adapters. The runner re-verifies
+auth at invoke time.
 
 > **Not to be confused with `groq`.** The `grok-cli` provider is xAI's Grok Build CLI. The
 > separate `groq` provider is the Groq HTTP API (a different company); the two are unrelated.
