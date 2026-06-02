@@ -25,9 +25,11 @@ session token > XAI_API_KEY`` (https://docs.x.ai/build/cli/headless-scripting).
 ``CLIInvocation.env`` rather than the blanket ``_SAFE_SUBPROCESS_ENV_PREFIXES``
 allowlist (which would leak it into every other CLI subprocess — same rationale as
 the Copilot/Claude Code adapters). There is no documented ``grok auth status``
-command, so detection is best-effort: ``XAI_API_KEY`` → authenticated; otherwise a
-non-empty session credential file under ``~/.grok-build`` / ``~/.grok`` →
-authenticated; otherwise not logged in. The runner re-verifies at invoke time.
+command, so detection is best-effort and prioritizes the **subscription** path:
+a non-empty session credential file under ``~/.grok/auth`` / ``~/.grok`` /
+``~/.grok-build`` (written by ``grok login``) → authenticated; otherwise
+``XAI_API_KEY`` → authenticated (headless/CI fallback); otherwise not logged in.
+The runner re-verifies at invoke time.
 """
 
 from __future__ import annotations
@@ -64,8 +66,10 @@ from app.integrations.llm_cli.timeout_utils import resolve_timeout_from_env
 
 _PROBE_TIMEOUT_SEC = 5.0
 _AUTH_HINT = "Run: grok login or set XAI_API_KEY."
-# Conventional config directories where ``grok login`` persists its session token.
-_GROK_CONFIG_DIRNAMES = (".grok-build", ".grok")
+# Config directories where ``grok login`` persists its session token. xAI's
+# enterprise docs list ``~/.grok/auth`` as the protected credential directory, so
+# it is checked first; ``.grok`` / ``.grok-build`` cover older / alternate layouts.
+_GROK_CONFIG_DIRNAMES = (".grok/auth", ".grok", ".grok-build")
 # Candidate session/credential filenames within a config dir (best-effort).
 _GROK_SESSION_FILES = ("auth.json", "credentials.json", "session.json", "tokens.json")
 
@@ -110,14 +114,21 @@ def _grok_session_authenticated() -> tuple[bool | None, str]:
 def _classify_grok_auth() -> tuple[bool | None, str]:
     """Return ``(logged_in, detail)`` for Grok Build CLI auth.
 
-    Resolution order mirrors Grok's own credential precedence:
-    1. ``XAI_API_KEY`` env → authenticated (works for headless/CI).
-    2. Persisted ``grok login`` session file under a known config dir → authenticated.
+    Subscription (``grok login``) is the primary, default path for SuperGrok /
+    X Premium Plus users, so it is checked first; ``XAI_API_KEY`` is the fallback
+    for headless / CI runs without an interactive login:
+    1. Persisted ``grok login`` session file under a known config dir → authenticated.
+    2. ``XAI_API_KEY`` env → authenticated (works for headless/CI).
     3. Otherwise not logged in (``False``); unreadable creds → unclear (``None``).
     """
+    session_logged_in, session_detail = _grok_session_authenticated()
+    if session_logged_in:
+        return True, session_detail
     if os.environ.get("XAI_API_KEY", "").strip():
         return True, "Authenticated via XAI_API_KEY."
-    return _grok_session_authenticated()
+    # No session and no API key: surface the session result (False, or None when
+    # creds existed but were unreadable) so the unclear state is not masked.
+    return session_logged_in, session_detail
 
 
 def _fallback_grok_paths() -> list[str]:

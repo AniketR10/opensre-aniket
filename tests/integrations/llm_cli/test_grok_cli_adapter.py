@@ -39,11 +39,33 @@ def _version_proc(version: str = "0.1.0") -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-def test_classify_auth_api_key_set() -> None:
-    with patch.dict(os.environ, {"XAI_API_KEY": "xai-test"}, clear=False):
+def test_classify_auth_api_key_set(tmp_path: Path) -> None:
+    # Empty home dir so the (now-primary) session check finds nothing and the
+    # API-key fallback is exercised deterministically.
+    with (
+        patch.dict(os.environ, {"XAI_API_KEY": "xai-test"}, clear=False),
+        patch("app.integrations.llm_cli.grok_cli.Path.home", return_value=tmp_path),
+    ):
         logged_in, detail = _classify_grok_auth()
     assert logged_in is True
     assert "XAI_API_KEY" in detail
+
+
+def test_classify_auth_session_wins_over_api_key(tmp_path: Path) -> None:
+    """Subscription (grok login) session is the default; it takes precedence over the API key."""
+    config_dir = tmp_path / ".grok"
+    config_dir.mkdir()
+    (config_dir / "session.json").write_text('{"token": "abc"}')
+
+    with (
+        patch.dict(os.environ, {"XAI_API_KEY": "xai-test"}, clear=False),
+        patch("app.integrations.llm_cli.grok_cli.Path.home", return_value=tmp_path),
+    ):
+        logged_in, detail = _classify_grok_auth()
+
+    assert logged_in is True
+    assert "session" in detail
+    assert "XAI_API_KEY" not in detail
 
 
 def test_classify_auth_session_file_present(tmp_path: Path) -> None:
@@ -105,11 +127,16 @@ def test_session_unreadable_returns_none() -> None:
 
 @patch(_VERSION_PROBE)
 @patch(_WHICH)
-def test_detect_logged_in_via_api_key(mock_which: MagicMock, mock_run: MagicMock) -> None:
+def test_detect_logged_in_via_api_key(
+    mock_which: MagicMock, mock_run: MagicMock, tmp_path: Path
+) -> None:
     mock_which.return_value = "/usr/bin/grok"
     mock_run.return_value = _version_proc()
 
-    with patch.dict(os.environ, {"XAI_API_KEY": "xai-test", "GROK_CLI_BIN": ""}, clear=False):
+    with (
+        patch.dict(os.environ, {"XAI_API_KEY": "xai-test", "GROK_CLI_BIN": ""}, clear=False),
+        patch("app.integrations.llm_cli.grok_cli.Path.home", return_value=tmp_path),
+    ):
         probe = GrokCLIAdapter().detect()
 
     assert probe.installed is True
