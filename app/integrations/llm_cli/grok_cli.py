@@ -247,14 +247,20 @@ class GrokCLIAdapter:
         return (stdout or "").strip()
 
     def explain_failure(self, *, stdout: str, stderr: str, returncode: int) -> str:
-        err = (stderr or "").strip()
-        out = (stdout or "").strip()
-        bits = [f"grok -p exited with code {returncode}"]
-        lowered = (err + "\n" + out).lower()
+        from app.integrations.llm_cli.failure_explain import explain_cli_failure
+
+        # Provider-specific auth message (more actionable than the generic shared
+        # hint); quota / context-length / network classification comes from the
+        # shared helper so Grok stays consistent with the other CLI adapters.
+        lowered = f"{stderr}\n{stdout}".lower()
+        extra: tuple[str, ...] = ()
         if "unauthorized" in lowered or "401" in lowered or "not logged in" in lowered:
-            bits.append(f"Authentication failed. {_AUTH_HINT}")
-        elif err:
-            bits.append(err[:2000])
-        elif out:
-            bits.append(out[:2000])
-        return ". ".join(bits)
+            extra = (f"Authentication failed. {_AUTH_HINT}",)
+
+        return explain_cli_failure(
+            exit_label="grok -p",
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            extra_messages=extra,
+        )

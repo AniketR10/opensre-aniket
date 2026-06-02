@@ -327,6 +327,14 @@ def test_explain_failure_falls_back_to_stdout() -> None:
     assert "some output" in msg
 
 
+def test_explain_failure_maps_quota_via_shared_helper() -> None:
+    """Quota/rate-limit errors get an actionable hint from the shared classifier."""
+    msg = GrokCLIAdapter().explain_failure(
+        stdout="", stderr="Error 429: rate limit exceeded", returncode=1
+    )
+    assert "quota or rate limit" in msg.lower()
+
+
 def test_auth_hint_mentions_login_and_api_key() -> None:
     adapter = GrokCLIAdapter()
     assert "grok login" in adapter.auth_hint
