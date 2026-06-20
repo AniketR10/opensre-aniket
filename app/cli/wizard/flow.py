@@ -946,6 +946,11 @@ def _configure_slack() -> tuple[str, str]:
             result = validate_slack_webhook(webhook_url=webhook_url)
         _render_integration_result("Slack", result)
         if result.ok:
+            # Persist the webhook to the store like every other integration
+            # (and like the CLI `_setup_slack`). Without this the wizard would
+            # validate the webhook, report "Slack" in the success summary, then
+            # silently discard it — leaving no readable credential anywhere.
+            upsert_integration("slack", {"credentials": {"webhook_url": webhook_url}})
             env_path = sync_env_values({})
             return "Slack", str(env_path)
         _console.print(f"[{SECONDARY}]Try again or press Ctrl+C to cancel.[/]")

@@ -498,6 +498,75 @@ def test_run_wizard_configures_dagster_oss_skips_secret(monkeypatch, tmp_path) -
     assert synced_secrets == []  # OSS path: no token
 
 
+def test_run_wizard_configures_slack_persists_webhook(monkeypatch, tmp_path) -> None:
+    """Regression: the wizard must upsert the Slack webhook to the store.
+
+    Previously `_configure_slack` validated the webhook and reported "Slack" in
+    the success summary but never called `upsert_integration`, silently
+    discarding the webhook (the catalog reads Slack store-first, so nothing was
+    readable afterwards). The webhook is a secret, so it belongs in the store,
+    not `.env` — `sync_env_values` is called with an empty mapping.
+    """
+    select_responses = iter(["quickstart", "anthropic", "claude-opus-4-7", "slack"])
+    # webhook_url is prompted with secret=True, so it comes from the password mock.
+    password_responses = iter(["llm-secret", "https://hooks.slack.com/services/T0/B0/XXXXX"])
+    saved_integrations: list[tuple[str, dict]] = []
+    synced_env_values: list[dict[str, str]] = []
+
+    def _mock_select(*_args, **_kwargs):
+        m = MagicMock()
+        m.ask.return_value = next(select_responses)
+        return m
+
+    def _mock_password(*_args, **_kwargs):
+        m = MagicMock()
+        m.ask.return_value = next(password_responses)
+        return m
+
+    def _mock_text(*_args, **_kwargs):
+        # Slack has no plain-text prompt; guard against an unexpected one.
+        m = MagicMock()
+        m.ask.return_value = ""
+        return m
+
+    monkeypatch.setattr(flow, "select_prompt", _mock_select)
+    monkeypatch.setattr(flow.questionary, "password", _mock_password)
+    monkeypatch.setattr(flow.questionary, "text", _mock_text)
+    monkeypatch.setattr(flow, "get_store_path", lambda: tmp_path / "opensre.json")
+    monkeypatch.setattr(flow, "probe_local_target", lambda _path: ProbeResult("local", True, "ok"))
+    monkeypatch.setattr(
+        flow,
+        "validate_slack_webhook",
+        lambda **_kwargs: flow.IntegrationHealthResult(ok=True, detail="Slack ok"),
+    )
+    monkeypatch.setattr(flow, "save_local_config", lambda **_kwargs: tmp_path / "opensre.json")
+    monkeypatch.setattr(flow, "sync_provider_env", lambda **_kwargs: tmp_path / ".env")
+    monkeypatch.setattr(flow, "save_llm_api_key", lambda *_args, **_kwargs: None)
+
+    def _sync_env_values(values: dict[str, str], **_kwargs):
+        synced_env_values.append(values)
+        return tmp_path / ".env"
+
+    monkeypatch.setattr(flow, "sync_env_values", _sync_env_values)
+    monkeypatch.setattr(
+        flow,
+        "upsert_integration",
+        lambda service, payload: saved_integrations.append((service, payload)),
+    )
+
+    exit_code = flow.run_wizard()
+
+    assert exit_code == 0
+    assert saved_integrations == [
+        (
+            "slack",
+            {"credentials": {"webhook_url": "https://hooks.slack.com/services/T0/B0/XXXXX"}},
+        )
+    ]
+    # Webhook is a secret: it goes to the store, not `.env`.
+    assert synced_env_values == [{}]
+
+
 def test_run_wizard_dagster_retries_on_validation_failure(monkeypatch, tmp_path) -> None:
     """Two consecutive Dagster validation failures, then success.
 
