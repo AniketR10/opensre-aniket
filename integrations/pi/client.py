@@ -5,6 +5,10 @@ workspace so it can implement a coding task (read/write/edit/bash), then capture
 what changed via git. This is the *hands* role for Pi, the inverse of the
 ``integrations/llm_cli`` provider role (the *brain*).
 
+Execution model: Pi runs as a child process that is **polled to a deadline**
+(``_poll_process``) rather than a single blocking call, so a long task is bounded
+and the process is terminated gracefully (SIGTERM, then SIGKILL) on timeout.
+
 Safety model (see issue: "Add Pi as an integration and tool for submitting
 coding tasks"): the task prompt forbids commits/pushes and destructive git
 commands, and the caller gates invocation (the ``tools`` layer only runs this when
@@ -15,8 +19,10 @@ diff; it never commits, pushes, or opens a PR.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,7 +38,22 @@ from platform.masking import MaskingContext, MaskingPolicy
 _GIT_TIMEOUT_SEC = 30.0
 _MAX_DIFF_CHARS = 20000
 _MAX_OUTPUT_CHARS = 8000
+_POLL_INTERVAL_SEC = 0.5
+_TERMINATE_GRACE_SEC = 5.0
 _INSTALL_HINT = "npm i -g @earendil-works/pi-coding-agent"
+
+# Provider-side limit/error signatures Pi prints (often to stdout, exit 0).
+_LIMIT_MARKERS: tuple[str, ...] = (
+    "resource_exhausted",
+    "quota",
+    "rate limit",
+    "too many requests",
+    "credit balance",
+    '"code":429',
+    '"code": 429',
+    '"code":413',
+    '"code": 413',
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +68,17 @@ class PiCodingResult:
     timed_out: bool = False
     error: str | None = None
     diff_truncated: bool = False
+
+
+@dataclass(frozen=True)
+class _ProcessOutcome:
+    """Raw result of polling the Pi subprocess to completion or deadline."""
+
+    stdout: str
+    stderr: str
+    returncode: int
+    timed_out: bool
+    spawn_error: str | None = None
 
 
 def _resolve_pi_binary() -> str | None:
@@ -81,6 +113,62 @@ def _build_task_prompt(task: str) -> str:
         "- Preserve unrelated changes already in the working tree.\n"
         "- Run focused tests or lint checks when practical.\n"
         "- Finish with a concise summary of the files you changed and any verification you ran.\n"
+    )
+
+
+def _terminate(proc: subprocess.Popen[str]) -> None:
+    """Stop a still-running child: SIGTERM, then SIGKILL if it lingers."""
+    with contextlib.suppress(Exception):
+        proc.terminate()
+    try:
+        proc.wait(timeout=_TERMINATE_GRACE_SEC)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+
+def _poll_process(
+    argv: list[str], *, cwd: str, env: dict[str, str], timeout_sec: float
+) -> _ProcessOutcome:
+    """Spawn Pi and poll it to completion or *timeout_sec*, then collect output.
+
+    Polling (rather than a single blocking ``subprocess.run``) lets us enforce the
+    deadline ourselves and terminate the process gracefully on timeout.
+    """
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        return _ProcessOutcome("", "", -1, False, spawn_error=f"failed to run pi: {exc}")
+
+    deadline = time.monotonic() + max(timeout_sec, 0.0)
+    timed_out = False
+    while proc.poll() is None:
+        if time.monotonic() >= deadline:
+            timed_out = True
+            _terminate(proc)
+            break
+        time.sleep(_POLL_INTERVAL_SEC)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=_TERMINATE_GRACE_SEC)
+    except subprocess.TimeoutExpired:
+        _terminate(proc)
+        stdout, stderr = proc.communicate()
+
+    return _ProcessOutcome(
+        stdout=stdout or "",
+        stderr=stderr or "",
+        returncode=proc.returncode if proc.returncode is not None else -1,
+        timed_out=timed_out,
     )
 
 
@@ -120,6 +208,17 @@ def _changed_files(cwd: str) -> list[str]:
     return files
 
 
+def _capture_changes(cwd: str) -> tuple[list[str], str, bool]:
+    """Return (changed_files, diff, diff_truncated) for the working tree vs HEAD."""
+    changed_files = _changed_files(cwd)
+    _, diff = _git(["diff", "HEAD"], cwd)
+    diff_truncated = False
+    if len(diff) > _MAX_DIFF_CHARS:
+        diff = diff[:_MAX_DIFF_CHARS]
+        diff_truncated = True
+    return changed_files, diff, diff_truncated
+
+
 def run_pi_coding_task(
     task: str,
     *,
@@ -127,7 +226,13 @@ def run_pi_coding_task(
     model: str | None,
     timeout_sec: float,
 ) -> PiCodingResult:
-    """Run Pi against *task* in *workspace*; return summary + diff of what changed."""
+    """Run Pi against *task* in *workspace*; return summary + diff of what changed.
+
+    Pre-flight failures (missing binary, bad workspace) and execution failures
+    (timeout, provider limit, no-op) are all returned as a populated
+    ``PiCodingResult`` with ``success=False`` and a human-readable ``error`` — this
+    function does not raise for expected conditions.
+    """
     binary = _resolve_pi_binary()
     if not binary:
         return PiCodingResult(
@@ -150,80 +255,53 @@ def run_pi_coding_task(
     if resolved_model:
         argv.extend(["--model", resolved_model])
 
-    env = build_cli_subprocess_env(_pi_subprocess_env())
+    outcome = _poll_process(
+        argv,
+        cwd=ws,
+        env=build_cli_subprocess_env(_pi_subprocess_env()),
+        timeout_sec=timeout_sec,
+    )
+    if outcome.spawn_error:
+        return PiCodingResult(success=False, summary="", returncode=-1, error=outcome.spawn_error)
 
-    timed_out = False
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=ws,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_sec,
-            env=env,
-            check=False,
-        )
-        stdout, stderr, returncode = (proc.stdout or ""), (proc.stderr or ""), proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        returncode = -1
-    except OSError as exc:
-        return PiCodingResult(
-            success=False, summary="", returncode=-1, error=f"failed to run pi: {exc}"
-        )
+    changed_files, diff, diff_truncated = _capture_changes(ws) if is_git else ([], "", False)
 
-    changed_files: list[str] = []
-    diff = ""
-    diff_truncated = False
-    if is_git:
-        changed_files = _changed_files(ws)
-        _, diff = _git(["diff", "HEAD"], ws)
-        if len(diff) > _MAX_DIFF_CHARS:
-            diff = diff[:_MAX_DIFF_CHARS]
-            diff_truncated = True
+    return _build_result(outcome, changed_files, diff, diff_truncated, timeout_sec)
 
+
+def _build_result(
+    outcome: _ProcessOutcome,
+    changed_files: list[str],
+    diff: str,
+    diff_truncated: bool,
+    timeout_sec: float,
+) -> PiCodingResult:
+    """Classify the run into success / error from output, exit code, and changes."""
     # Mask free-text fields (Pi may echo env/secrets); the diff is left verbatim
     # since masking would corrupt code the caller needs to review.
     masker = MaskingContext(MaskingPolicy.from_env())
-    out_text = (stdout or "").strip()
-    err_text = (stderr or "").strip()
+    out_text = outcome.stdout.strip()
+    err_text = outcome.stderr.strip()
     summary = masker.mask(out_text[:_MAX_OUTPUT_CHARS])
 
     # Pi prints provider errors (e.g. a 429 quota/rate-limit) to *stdout* and can
-    # still exit 0, so detect limit/error signatures in the combined output rather
-    # than trusting the exit code alone.
+    # still exit 0, so detect limit/error signatures regardless of the exit code.
     lowered = f"{out_text}\n{err_text}".lower()
-    hit_limit = any(
-        marker in lowered
-        for marker in (
-            "resource_exhausted",
-            "quota",
-            "rate limit",
-            "too many requests",
-            "credit balance",
-            '"code":429',
-            '"code": 429',
-            '"code":413',
-            '"code": 413',
-        )
-    )
+    hit_limit = any(marker in lowered for marker in _LIMIT_MARKERS)
 
     made_changes = bool(changed_files)
-    # A real success edited something or at least produced a summary, with no
-    # limit/error markers and a clean exit.
     success = (
-        (not timed_out) and returncode == 0 and not hit_limit and (made_changes or bool(summary))
+        (not outcome.timed_out)
+        and outcome.returncode == 0
+        and not hit_limit
+        and (made_changes or bool(summary))
     )
 
     error: str | None = None
-    if timed_out:
+    if outcome.timed_out:
         error = f"pi timed out after {timeout_sec:.0f}s"
-    elif returncode != 0 or hit_limit:
-        detail = err_text or out_text or f"pi exited with code {returncode}"
+    elif outcome.returncode != 0 or hit_limit:
+        detail = err_text or out_text or f"pi exited with code {outcome.returncode}"
         error = masker.mask(detail[:_MAX_OUTPUT_CHARS])
     elif not made_changes and not summary:
         error = (
@@ -236,8 +314,8 @@ def run_pi_coding_task(
         summary=summary,
         changed_files=changed_files,
         diff=diff,
-        returncode=returncode,
-        timed_out=timed_out,
+        returncode=outcome.returncode,
+        timed_out=outcome.timed_out,
         error=error,
         diff_truncated=diff_truncated,
     )

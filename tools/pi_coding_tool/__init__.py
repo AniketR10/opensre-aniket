@@ -12,27 +12,105 @@ mirroring how ``run_diagnostic_code`` ships disabled by default:
   the investigation pipeline actually consume (the ``chat`` surface has no live
   consumer). Reachability is gated by ``PI_CODING_ENABLED``, not by the surface.
 
-It edits the working tree and returns a summary + git diff; it never commits,
-pushes, or opens a PR (see ``integrations/pi``).
+Lifecycle (``run`` orchestrates these stages, each with a clear failure mode):
+
+1. ``_ensure_enabled``    — opt-in gate (``PI_CODING_ENABLED``).
+2. ``_resolve_request``   — validate + normalize ``task`` / ``workspace`` / ``model``.
+3. ``_ensure_cli_ready``  — Pi binary installed and authenticated.
+4. ``_execute``           — run the polled Pi process (``integrations/pi`` client).
+5. ``_to_output``         — shape a stable result dict with an ``error_kind``.
+
+Expected failures return a structured ``{"success": False, "error_kind": ...}`` dict;
+any *unexpected* exception propagates to ``BaseTool.__call__``, which reports it to
+Sentry (the global tool wrapper). It edits the working tree and returns a summary + git
+diff; it never commits, pushes, or opens a PR (see ``integrations/pi``).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from core.domain.types.evidence import EvidenceSource
 from integrations.pi import (
+    PiCodingResult,
     is_pi_coding_enabled,
     pi_coding_model,
     pi_coding_timeout_seconds,
     pi_coding_workspace,
     run_pi_coding_task,
+    verify_pi_coding,
 )
 from tools.base import BaseTool
 
-_DISABLED_MESSAGE = (
-    "Pi coding tool is disabled. Set PI_CODING_ENABLED=1 (and install/authenticate "
-    "the Pi CLI) to enable it."
-)
+_SOURCE: EvidenceSource = "knowledge"
+_MAX_TASK_CHARS = 4000
+
+# Stable error categories surfaced in the tool's ``error_kind`` output field.
+ERR_DISABLED = "disabled"
+ERR_INVALID_INPUT = "invalid_input"
+ERR_CLI_UNAVAILABLE = "cli_unavailable"
+ERR_TIMEOUT = "timeout"
+ERR_EXECUTION = "execution_error"
+
+
+class _PiToolError(Exception):
+    """An expected, user-actionable failure with a stable ``kind``."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+@dataclass(frozen=True)
+class _ResolvedRequest:
+    """A validated, fully-resolved coding request ready to execute."""
+
+    task: str
+    workspace: str
+    model: str | None
+    timeout_sec: float
+
+
+# --------------------------------------------------------------------------- #
+# validators
+# --------------------------------------------------------------------------- #
+def _validate_task(task: str | None) -> str:
+    cleaned = (task or "").strip()
+    if not cleaned:
+        raise _PiToolError(ERR_INVALID_INPUT, "task is required and must be non-empty.")
+    if len(cleaned) > _MAX_TASK_CHARS:
+        raise _PiToolError(
+            ERR_INVALID_INPUT,
+            f"task is too long ({len(cleaned)} chars); keep it under {_MAX_TASK_CHARS}.",
+        )
+    return cleaned
+
+
+def _validate_workspace(workspace: str | None) -> str:
+    resolved = (workspace or "").strip() or pi_coding_workspace()
+    path = Path(resolved).expanduser()
+    if not path.exists():
+        raise _PiToolError(ERR_INVALID_INPUT, f"workspace does not exist: {path}")
+    if not path.is_dir():
+        raise _PiToolError(ERR_INVALID_INPUT, f"workspace is not a directory: {path}")
+    return str(path)
+
+
+def _validate_model(model: str | None) -> str | None:
+    resolved = (model or "").strip() or pi_coding_model()
+    if resolved is None:
+        return None
+    # Pi accepts "provider/model" and shorthands (e.g. "sonnet:high"); only reject
+    # obviously malformed values (whitespace inside the token).
+    if any(ch.isspace() for ch in resolved):
+        raise _PiToolError(
+            ERR_INVALID_INPUT,
+            f"model must not contain whitespace; got {resolved!r}.",
+        )
+    return resolved
 
 
 class PiCodingTool(BaseTool):
@@ -40,7 +118,7 @@ class PiCodingTool(BaseTool):
 
     name = "pi_coding_task"
     display_name = "Pi coding task"
-    source = "knowledge"
+    source = _SOURCE
     side_effect_level = "mutating"
     surfaces = ("investigation",)
     requires_approval = True
@@ -87,37 +165,60 @@ class PiCodingTool(BaseTool):
     }
     outputs = {
         "success": "True when Pi completed and exited cleanly",
+        "error_kind": "Stable failure category (disabled, invalid_input, cli_unavailable, "
+        "timeout, execution_error) or None on success",
         "summary": "Pi's final message summarizing what it changed",
         "changed_files": "Files modified in the working tree (status porcelain)",
         "diff": "git diff of the changes vs HEAD (truncated if large)",
         "diff_truncated": "True when the diff was truncated",
-        "error": "Error detail when the task failed",
+        "error": "Human-readable error detail when the task failed",
     }
 
+    # ----- availability ---------------------------------------------------- #
     def is_available(self, _sources: dict[str, dict]) -> bool:
         """Only available when explicitly opted in (cheap flag check)."""
         return is_pi_coding_enabled()
 
-    def run(
-        self,
-        task: str,
-        workspace: str | None = None,
-        model: str | None = None,
-    ) -> dict[str, Any]:
+    # ----- lifecycle stages ------------------------------------------------ #
+    def _ensure_enabled(self) -> None:
         if not is_pi_coding_enabled():
-            return {"source": "knowledge", "success": False, "error": _DISABLED_MESSAGE}
-        if not (task or "").strip():
-            return {"source": "knowledge", "success": False, "error": "task is required."}
+            raise _PiToolError(
+                ERR_DISABLED,
+                "Pi coding tool is disabled. Set PI_CODING_ENABLED=1 (and install/authenticate "
+                "the Pi CLI) to enable it.",
+            )
 
-        result = run_pi_coding_task(
-            task,
-            workspace=workspace or pi_coding_workspace(),
-            model=model or pi_coding_model(),
+    def _resolve_request(
+        self, task: str | None, workspace: str | None, model: str | None
+    ) -> _ResolvedRequest:
+        return _ResolvedRequest(
+            task=_validate_task(task),
+            workspace=_validate_workspace(workspace),
+            model=_validate_model(model),
             timeout_sec=pi_coding_timeout_seconds(),
         )
+
+    def _ensure_cli_ready(self) -> None:
+        available, detail = verify_pi_coding()
+        if not available:
+            raise _PiToolError(ERR_CLI_UNAVAILABLE, f"Pi CLI is not ready: {detail}")
+
+    def _execute(self, request: _ResolvedRequest) -> PiCodingResult:
+        return run_pi_coding_task(
+            request.task,
+            workspace=request.workspace,
+            model=request.model,
+            timeout_sec=request.timeout_sec,
+        )
+
+    def _to_output(self, result: PiCodingResult) -> dict[str, Any]:
+        error_kind: str | None = None
+        if not result.success:
+            error_kind = ERR_TIMEOUT if result.timed_out else ERR_EXECUTION
         return {
-            "source": "knowledge",
+            "source": _SOURCE,
             "success": result.success,
+            "error_kind": error_kind,
             "summary": result.summary,
             "changed_files": result.changed_files,
             "diff": result.diff,
@@ -126,6 +227,28 @@ class PiCodingTool(BaseTool):
             "timed_out": result.timed_out,
             "error": result.error,
         }
+
+    def _error(self, kind: str, message: str) -> dict[str, Any]:
+        return {"source": _SOURCE, "success": False, "error_kind": kind, "error": message}
+
+    # ----- entrypoint ------------------------------------------------------ #
+    def run(
+        self,
+        task: str,
+        workspace: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            self._ensure_enabled()
+            request = self._resolve_request(task, workspace, model)
+            self._ensure_cli_ready()
+        except _PiToolError as exc:
+            return self._error(exc.kind, exc.message)
+
+        # Expected execution failures (timeout, provider limit, no-op) come back as a
+        # populated PiCodingResult; any *unexpected* exception propagates to
+        # BaseTool.__call__, which reports it to Sentry (the global tool wrapper).
+        return self._to_output(self._execute(request))
 
 
 # Module-level instance so the tool registry auto-discovers it (see tools/registry.py).

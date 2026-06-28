@@ -81,31 +81,62 @@ def test_verify_pi_coding_not_authed(mock_cls: MagicMock) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# client
+# client — git goes through subprocess.run; the pi process goes through Popen
+# (it is polled to a deadline), so the two are mocked separately.
 # --------------------------------------------------------------------------- #
-def _git_side_effect(diff: str = "diff --git a/foo.py b/foo.py\n+changed\n") -> object:
+_POPEN = "integrations.pi.client.subprocess.Popen"
+
+
+class _FakePopen:
+    """Minimal Popen stand-in for the client's poll loop."""
+
+    def __init__(
+        self, *, stdout: str = "", stderr: str = "", returncode: int = 0, hang: bool = False
+    ) -> None:
+        self._out, self._err, self._rc, self._hang = stdout, stderr, returncode, hang
+
+    def poll(self) -> int | None:
+        return None if self._hang else self._rc
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:  # noqa: ARG002
+        return self._out, self._err
+
+    def terminate(self) -> None:
+        self._hang = False
+
+    def kill(self) -> None:
+        self._hang = False
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+        return self._rc
+
+    @property
+    def returncode(self) -> int | None:
+        return None if self._hang else self._rc
+
+
+def _git_run_side_effect(diff: str = "diff --git a/foo.py b/foo.py\n+changed\n") -> object:
     def side_effect(cmd: list[str], **_: object) -> MagicMock:
-        if cmd[0] == "git":
-            sub = cmd[1]
-            if sub == "rev-parse":
-                return MagicMock(returncode=0, stdout="true\n", stderr="")
-            if sub == "status":
-                return MagicMock(returncode=0, stdout=" M foo.py\n?? bar.py\n", stderr="")
-            if sub == "diff":
-                return MagicMock(returncode=0, stdout=diff, stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-        # the pi invocation
-        return MagicMock(returncode=0, stdout="Edited foo.py to fix the bug.\n", stderr="")
+        sub = cmd[1]  # only git calls reach subprocess.run now
+        if sub == "rev-parse":
+            return MagicMock(returncode=0, stdout="true\n", stderr="")
+        if sub == "status":
+            return MagicMock(returncode=0, stdout=" M foo.py\n?? bar.py\n", stderr="")
+        if sub == "diff":
+            return MagicMock(returncode=0, stdout=diff, stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
 
     return side_effect
 
 
+@patch(_POPEN)
 @patch(_RUN)
 @patch(_RESOLVE, return_value="/usr/bin/pi")
 def test_run_pi_coding_task_success_captures_diff(
-    _mock_resolve: MagicMock, mock_run: MagicMock, tmp_path: Path
+    _mock_resolve: MagicMock, mock_run: MagicMock, mock_popen: MagicMock, tmp_path: Path
 ) -> None:
-    mock_run.side_effect = _git_side_effect()
+    mock_run.side_effect = _git_run_side_effect()
+    mock_popen.return_value = _FakePopen(stdout="Edited foo.py to fix the bug.\n", returncode=0)
     result = run_pi_coding_task(
         "fix the bug",
         workspace=str(tmp_path),
@@ -118,10 +149,11 @@ def test_run_pi_coding_task_success_captures_diff(
     assert "diff --git" in result.diff
     assert "Edited foo.py" in result.summary
     assert result.error is None
-    # the pi invocation carried the model flag and ran in the workspace
-    pi_call = next(c for c in mock_run.call_args_list if c.args[0][0] == "/usr/bin/pi")
-    assert "--model" in pi_call.args[0]
-    assert pi_call.kwargs["cwd"] == str(tmp_path)
+    # the pi process carried the model flag and ran in the workspace
+    argv = mock_popen.call_args.args[0]
+    assert argv[0] == "/usr/bin/pi"
+    assert "--model" in argv
+    assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
 
 
 @patch(_RESOLVE, return_value=None)
@@ -131,38 +163,28 @@ def test_run_pi_coding_task_binary_missing(_mock_resolve: MagicMock, tmp_path: P
     assert "Pi CLI not found" in (result.error or "")
 
 
+@patch(_POPEN)
 @patch(_RUN)
 @patch(_RESOLVE, return_value="/usr/bin/pi")
 def test_run_pi_coding_task_timeout(
-    _mock_resolve: MagicMock, mock_run: MagicMock, tmp_path: Path
+    _mock_resolve: MagicMock, mock_run: MagicMock, mock_popen: MagicMock, tmp_path: Path
 ) -> None:
-    def side_effect(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[0] == "git":
-            if cmd[1] == "rev-parse":
-                return MagicMock(returncode=0, stdout="true\n", stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-        raise subprocess.TimeoutExpired(cmd=cmd, timeout=60)
-
-    mock_run.side_effect = side_effect
-    result = run_pi_coding_task("x", workspace=str(tmp_path), model=None, timeout_sec=60)
+    mock_run.side_effect = _git_run_side_effect()
+    mock_popen.return_value = _FakePopen(hang=True)  # never finishes
+    result = run_pi_coding_task("x", workspace=str(tmp_path), model=None, timeout_sec=0)
     assert result.success is False
     assert result.timed_out is True
     assert "timed out" in (result.error or "")
 
 
+@patch(_POPEN)
 @patch(_RUN)
 @patch(_RESOLVE, return_value="/usr/bin/pi")
 def test_run_pi_coding_task_nonzero_exit(
-    _mock_resolve: MagicMock, mock_run: MagicMock, tmp_path: Path
+    _mock_resolve: MagicMock, mock_run: MagicMock, mock_popen: MagicMock, tmp_path: Path
 ) -> None:
-    def side_effect(cmd: list[str], **_: object) -> MagicMock:
-        if cmd[0] == "git":
-            if cmd[1] == "rev-parse":
-                return MagicMock(returncode=0, stdout="true\n", stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-        return MagicMock(returncode=1, stdout="", stderr="model not found: bogus")
-
-    mock_run.side_effect = side_effect
+    mock_run.side_effect = _git_run_side_effect()
+    mock_popen.return_value = _FakePopen(stderr="model not found: bogus", returncode=1)
     result = run_pi_coding_task("x", workspace=str(tmp_path), model="bogus", timeout_sec=60)
     assert result.success is False
     assert "model not found" in (result.error or "")

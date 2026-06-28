@@ -1,15 +1,31 @@
-"""Tests for the Pi coding tool (gated, mutating, approval-required)."""
+"""Tests for the Pi coding tool: metadata, gating, validators, lifecycle, error_kind."""
 
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from integrations.pi import PiCodingResult
-from tools.pi_coding_tool import PiCodingTool, pi_coding_task
+from tools.pi_coding_tool import (
+    PiCodingTool,
+    _PiToolError,
+    _validate_model,
+    _validate_task,
+    _validate_workspace,
+    pi_coding_task,
+)
+
+_VERIFY = "tools.pi_coding_tool.verify_pi_coding"
+_RUN = "tools.pi_coding_tool.run_pi_coding_task"
 
 
-def test_metadata_is_mutating_and_approval_gated() -> None:
+# --------------------------------------------------------------------------- #
+# metadata + availability
+# --------------------------------------------------------------------------- #
+def test_metadata_is_mutating_on_investigation_surface() -> None:
     t = pi_coding_task
     assert t.name == "pi_coding_task"
     assert t.source == "knowledge"
@@ -17,7 +33,7 @@ def test_metadata_is_mutating_and_approval_gated() -> None:
     assert t.requires_approval is True
     assert t.surfaces == ("investigation",)
     assert t.input_schema["required"] == ["task"]
-    # metadata validates against the strict schema
+    assert "error_kind" in t.outputs
     assert t.metadata().name == "pi_coding_task"
 
 
@@ -29,62 +45,119 @@ def test_is_available_off_by_default_then_opt_in() -> None:
         assert pi_coding_task.is_available({}) is True
 
 
-def test_run_disabled_returns_error() -> None:
+# --------------------------------------------------------------------------- #
+# validators
+# --------------------------------------------------------------------------- #
+def test_validate_task() -> None:
+    assert _validate_task("  do it  ") == "do it"
+    with pytest.raises(_PiToolError) as empty:
+        _validate_task("   ")
+    assert empty.value.kind == "invalid_input"
+    with pytest.raises(_PiToolError) as too_long:
+        _validate_task("x" * 5000)
+    assert too_long.value.kind == "invalid_input"
+
+
+def test_validate_workspace(tmp_path: Path) -> None:
+    assert _validate_workspace(str(tmp_path)) == str(tmp_path)
+    with pytest.raises(_PiToolError) as missing:
+        _validate_workspace("/no/such/path/xyz123")
+    assert missing.value.kind == "invalid_input"
+
+
+def test_validate_model() -> None:
+    assert _validate_model("anthropic/claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+    with pytest.raises(_PiToolError) as bad:
+        _validate_model("bad model")
+    assert bad.value.kind == "invalid_input"
+    with patch.dict(os.environ, {"PI_CODING_MODEL": ""}, clear=False):
+        assert _validate_model("") is None
+
+
+# --------------------------------------------------------------------------- #
+# run() lifecycle + error_kind
+# --------------------------------------------------------------------------- #
+def test_run_disabled() -> None:
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("PI_CODING_ENABLED", None)
         out = pi_coding_task.run(task="do something")
     assert out["success"] is False
-    assert "disabled" in out["error"].lower()
+    assert out["error_kind"] == "disabled"
 
 
-def test_run_requires_task() -> None:
+def test_run_invalid_task() -> None:
     with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
         out = pi_coding_task.run(task="   ")
     assert out["success"] is False
-    assert "task is required" in out["error"].lower()
+    assert out["error_kind"] == "invalid_input"
 
 
-@patch("tools.pi_coding_tool.run_pi_coding_task")
-def test_run_success_shapes_output(mock_run: object) -> None:
-    mock_run.return_value = PiCodingResult(  # type: ignore[attr-defined]
+@patch(_VERIFY, return_value=(False, "pi not installed"))
+def test_run_cli_unavailable(_mock_verify: MagicMock, tmp_path: Path) -> None:
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
+    assert out["success"] is False
+    assert out["error_kind"] == "cli_unavailable"
+
+
+@patch(_RUN)
+@patch(_VERIFY, return_value=(True, "ok"))
+def test_run_success(_mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Path) -> None:
+    mock_run.return_value = PiCodingResult(
         success=True,
         summary="edited foo.py",
         changed_files=["foo.py"],
         diff="diff --git a/foo.py b/foo.py\n",
         returncode=0,
     )
-    with patch.dict(
-        os.environ, {"PI_CODING_ENABLED": "1", "PI_CODING_WORKSPACE": "/repo"}, clear=False
-    ):
-        out = pi_coding_task.run(task="fix it", model="groq/llama-3.1-8b-instant")
-
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task.run(
+            task="fix it", workspace=str(tmp_path), model="groq/llama-3.1-8b-instant"
+        )
     assert out["success"] is True
-    assert out["summary"] == "edited foo.py"
+    assert out["error_kind"] is None
     assert out["changed_files"] == ["foo.py"]
     assert "diff --git" in out["diff"]
-    # task forwarded with resolved workspace + model
-    kwargs = mock_run.call_args.kwargs  # type: ignore[attr-defined]
-    assert kwargs["workspace"] == "/repo"
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["workspace"] == str(tmp_path)
     assert kwargs["model"] == "groq/llama-3.1-8b-instant"
 
 
-def test_run_returns_error_dict_on_exception() -> None:
-    # __call__ wraps run() and returns a structured error instead of raising.
-    with (
-        patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False),
-        patch("tools.pi_coding_tool.run_pi_coding_task", side_effect=RuntimeError("boom")),
-    ):
-        out = pi_coding_task(task="fix it")
+@patch(_RUN)
+@patch(_VERIFY, return_value=(True, "ok"))
+def test_run_error_kinds(_mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Path) -> None:
+    mock_run.return_value = PiCodingResult(
+        success=False, summary="", error="pi timed out", timed_out=True
+    )
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
+    assert out["error_kind"] == "timeout"
+
+    mock_run.return_value = PiCodingResult(success=False, summary="", error="model not found")
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
+    assert out["error_kind"] == "execution_error"
+
+
+@patch(_VERIFY, return_value=(True, "ok"))
+@patch(_RUN, side_effect=RuntimeError("boom"))
+def test_run_unexpected_exception_returns_error_dict(
+    _mock_run: MagicMock, _mock_verify: MagicMock, tmp_path: Path
+) -> None:
+    # __call__ wraps run(); an unexpected exception is reported + degraded to a dict.
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task(task="fix it", workspace=str(tmp_path))
     assert "error" in out
 
 
+# --------------------------------------------------------------------------- #
+# registry discovery
+# --------------------------------------------------------------------------- #
 def test_registry_discovers_pi_coding_on_investigation_surface() -> None:
     from tools.registry import get_registered_tool_map
 
     investigation = get_registered_tool_map("investigation")
     chat = get_registered_tool_map("chat")
-    # On the investigation surface (consumed by the REPL assistant tool loop and
-    # the investigation pipeline); not on the chat surface (which has no live consumer).
     assert "pi_coding_task" in investigation
     assert "pi_coding_task" not in chat
     rt = investigation["pi_coding_task"]
