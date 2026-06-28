@@ -231,9 +231,7 @@ def test_build_result_real_rate_limit_with_no_changes_is_a_failure() -> None:
         returncode=1,
         timed_out=False,
     )
-    result = _build_result(
-        outcome, changed_files=[], diff="", diff_truncated=False, timeout_sec=60
-    )
+    result = _build_result(outcome, changed_files=[], diff="", diff_truncated=False, timeout_sec=60)
     assert result.success is False
     assert result.error
 
