@@ -191,6 +191,53 @@ def test_run_pi_coding_task_nonzero_exit(
     assert "model not found" in (result.error or "")
 
 
+@patch(_RESOLVE, return_value="/usr/bin/pi")
+def test_run_pi_coding_task_non_git_workspace_fails(
+    _mock_resolve: MagicMock, tmp_path: Path
+) -> None:
+    # Real directory, but not a git repo: must fail fast (before editing) rather
+    # than return a misleading success with an empty diff.
+    result = run_pi_coding_task("x", workspace=str(tmp_path), model=None, timeout_sec=60)
+    assert result.success is False
+    assert "not a git repository" in (result.error or "")
+
+
+def test_build_result_limit_word_in_successful_edit_is_not_a_limit() -> None:
+    from integrations.pi.client import _build_result, _ProcessOutcome
+
+    outcome = _ProcessOutcome(
+        stdout="Updated the quota manager and rate limit handling.",
+        stderr="",
+        returncode=0,
+        timed_out=False,
+    )
+    result = _build_result(
+        outcome,
+        changed_files=["quota.py"],
+        diff="diff --git a/quota.py b/quota.py\n",
+        diff_truncated=False,
+        timeout_sec=60,
+    )
+    assert result.success is True
+    assert result.error is None
+
+
+def test_build_result_real_rate_limit_with_no_changes_is_a_failure() -> None:
+    from integrations.pi.client import _build_result, _ProcessOutcome
+
+    outcome = _ProcessOutcome(
+        stdout='{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}',
+        stderr="",
+        returncode=1,
+        timed_out=False,
+    )
+    result = _build_result(
+        outcome, changed_files=[], diff="", diff_truncated=False, timeout_sec=60
+    )
+    assert result.success is False
+    assert result.error
+
+
 def test_capture_changes_includes_new_untracked_files(tmp_path: Path) -> None:
     """A file Pi creates (untracked) must appear in the diff, not just changed_files.
 

@@ -47,13 +47,17 @@ _TERMINATE_GRACE_SEC = 5.0
 _INSTALL_HINT = "npm i -g @earendil-works/pi-coding-agent"
 _TASK_TAG = "user_task"  # delimiter for the untrusted task block (prompt-injection guard)
 
-# Provider-side limit/error signatures Pi prints (often to stdout, exit 0).
+# Provider-side limit/error signatures Pi prints (often to stdout, exit 0). These
+# are specific error phrases — NOT bare words like "quota" — so a task that edits
+# quota/rate-limit code is not misread as a provider failure.
 _LIMIT_MARKERS: tuple[str, ...] = (
     "resource_exhausted",
-    "quota",
-    "rate limit",
     "too many requests",
-    "credit balance",
+    "exceeded your current quota",
+    "quota exceeded",
+    "rate limit exceeded",
+    "rate_limit_exceeded",
+    "credit balance is too low",
     '"code":429',
     '"code": 429',
     '"code":413',
@@ -336,7 +340,16 @@ def run_pi_coding_task(
             success=False, summary="", returncode=-1, error=f"workspace is not a directory: {ws}"
         )
 
-    is_git = _is_git_repo(ws)
+    # The tool's contract is "edit + return a reviewable diff". Without git we can
+    # neither capture nor review changes, so fail fast *before* editing rather than
+    # letting Pi edit files and reporting a misleading success with an empty diff.
+    if not _is_git_repo(ws):
+        return PiCodingResult(
+            success=False,
+            summary="",
+            returncode=-1,
+            error=f"workspace is not a git repository; the tool needs git to capture changes: {ws}",
+        )
 
     argv: list[str] = [binary, "-p", _build_task_prompt(task)]
     resolved_model = (model or "").strip()
@@ -352,7 +365,7 @@ def run_pi_coding_task(
     if outcome.spawn_error:
         return PiCodingResult(success=False, summary="", returncode=-1, error=outcome.spawn_error)
 
-    changed_files, diff, diff_truncated = _capture_changes(ws) if is_git else ([], "", False)
+    changed_files, diff, diff_truncated = _capture_changes(ws)
 
     return _build_result(outcome, changed_files, diff, diff_truncated, timeout_sec)
 
@@ -372,12 +385,14 @@ def _build_result(
     err_text = outcome.stderr.strip()
     summary = masker.mask(out_text[:_MAX_OUTPUT_CHARS])
 
-    # Pi prints provider errors (e.g. a 429 quota/rate-limit) to *stdout* and can
-    # still exit 0, so detect limit/error signatures regardless of the exit code.
-    lowered = f"{out_text}\n{err_text}".lower()
-    hit_limit = any(marker in lowered for marker in _LIMIT_MARKERS)
-
     made_changes = bool(changed_files)
+    # Pi prints provider errors (e.g. a 429 quota/rate-limit) to *stdout* and can
+    # still exit 0, so detect limit/error signatures regardless of the exit code —
+    # but only when nothing was produced, so a *successful* edit whose output
+    # mentions a limit phrase is not misreported as a provider failure.
+    lowered = f"{out_text}\n{err_text}".lower()
+    hit_limit = (not made_changes) and any(marker in lowered for marker in _LIMIT_MARKERS)
+
     success = (
         (not outcome.timed_out)
         and outcome.returncode == 0
