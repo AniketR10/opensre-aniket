@@ -191,6 +191,22 @@ def test_run_pi_coding_task_nonzero_exit(
     assert "model not found" in (result.error or "")
 
 
+def test_capture_changes_includes_new_untracked_files(tmp_path: Path) -> None:
+    """A file Pi creates (untracked) must appear in the diff, not just changed_files.
+
+    Uses a real git repo since this exercises ``git diff --no-index`` behavior.
+    """
+    from integrations.pi.client import _capture_changes
+
+    _git_init_repo(tmp_path)  # commits hello.txt
+    (tmp_path / "added.py").write_text("print('brand new file')\n", encoding="utf-8")
+
+    changed, diff, _ = _capture_changes(str(tmp_path))
+    assert "added.py" in changed
+    assert "added.py" in diff
+    assert "brand new file" in diff  # the new file's content is in the diff
+
+
 def test_build_task_prompt_neutralizes_prompt_injection() -> None:
     """A crafted task must not break out of its block or forge a rules section that
     re-enables commits/pushes."""

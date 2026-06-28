@@ -40,6 +40,7 @@ from platform.masking import MaskingContext, MaskingPolicy
 
 _GIT_TIMEOUT_SEC = 30.0
 _MAX_DIFF_CHARS = 20000
+_MAX_UNTRACKED_FILES = 50
 _MAX_OUTPUT_CHARS = 8000
 _POLL_INTERVAL_SEC = 0.5
 _TERMINATE_GRACE_SEC = 5.0
@@ -266,10 +267,39 @@ def _changed_files(cwd: str) -> list[str]:
     return files
 
 
+def _untracked_diff(cwd: str) -> str:
+    """Diff for new (untracked) files, which ``git diff HEAD`` does not include.
+
+    ``git diff HEAD`` only covers tracked paths, so a file Pi *creates* would appear
+    in ``changed_files`` with no diff. We list untracked files (``-uall`` expands
+    directories into individual files) and render each as an added-content diff via
+    ``git diff --no-index``, which never touches the index.
+    """
+    rc, out = _git(["status", "--porcelain", "-uall"], cwd)
+    if rc != 0:
+        return ""
+    untracked = [line[3:].strip() for line in out.splitlines() if line.startswith("??")]
+    chunks: list[str] = []
+    for path in untracked[:_MAX_UNTRACKED_FILES]:
+        if not path:
+            continue
+        # `git diff --no-index` exits non-zero when the files differ — expected here;
+        # we use whatever it wrote to stdout (the added-content diff).
+        _, chunk = _git(["diff", "--no-index", "--no-color", "--", os.devnull, path], cwd)
+        if chunk:
+            chunks.append(chunk)
+    return "".join(chunks)
+
+
 def _capture_changes(cwd: str) -> tuple[list[str], str, bool]:
-    """Return (changed_files, diff, diff_truncated) for the working tree vs HEAD."""
+    """Return (changed_files, diff, diff_truncated) for the working tree vs HEAD.
+
+    The diff covers both tracked edits (``git diff HEAD``) and new untracked files
+    (rendered as added content), then is truncated to a sane size.
+    """
     changed_files = _changed_files(cwd)
-    _, diff = _git(["diff", "HEAD"], cwd)
+    _, tracked = _git(["diff", "HEAD"], cwd)
+    diff = tracked + _untracked_diff(cwd)
     diff_truncated = False
     if len(diff) > _MAX_DIFF_CHARS:
         diff = diff[:_MAX_DIFF_CHARS]
