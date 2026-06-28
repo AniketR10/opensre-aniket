@@ -42,13 +42,15 @@ def pi_coding_model(env: Mapping[str, str] | None = None) -> str | None:
     return source.get("PI_CODING_MODEL", "").strip() or None
 
 
-def pi_coding_timeout_seconds() -> float:
+def pi_coding_timeout_seconds(env: Mapping[str, str] | None = None) -> float:
     """Per-task timeout from ``PI_CODING_TIMEOUT_SECONDS`` (clamped)."""
+    source = env if env is not None else os.environ
     return resolve_timeout_from_env(
         env_key="PI_CODING_TIMEOUT_SECONDS",
         default=_DEFAULT_TIMEOUT_SEC,
         minimum=_MIN_TIMEOUT_SEC,
         maximum=_MAX_TIMEOUT_SEC,
+        env=source,
     )
 
 
