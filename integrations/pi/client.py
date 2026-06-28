@@ -22,9 +22,11 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
 from integrations.llm_cli.binary_resolver import (
     candidate_binary_names,
@@ -127,13 +129,36 @@ def _terminate(proc: subprocess.Popen[str]) -> None:
             proc.kill()
 
 
+def _drain(pipe: IO[str] | None, buffer: list[str]) -> None:
+    """Read *pipe* to EOF into *buffer*.
+
+    Pi streams verbose output (tool calls, edits, progress). If we polled without
+    draining, that output would fill the OS pipe buffer (~64 KB), block Pi on
+    ``write()``, and cause a false timeout. Draining concurrently in a thread is
+    the documented alternative to ``communicate()`` when we also need to watch a
+    deadline.
+    """
+    if pipe is None:
+        return
+    try:
+        for line in pipe:
+            buffer.append(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            pipe.close()
+
+
 def _poll_process(
     argv: list[str], *, cwd: str, env: dict[str, str], timeout_sec: float
 ) -> _ProcessOutcome:
-    """Spawn Pi and poll it to completion or *timeout_sec*, then collect output.
+    """Spawn Pi, drain its pipes, and poll it to completion or *timeout_sec*.
 
     Polling (rather than a single blocking ``subprocess.run``) lets us enforce the
-    deadline ourselves and terminate the process gracefully on timeout.
+    deadline ourselves and terminate the process gracefully on timeout. stdout and
+    stderr are drained by background threads throughout, so a chatty child can
+    never deadlock on a full pipe buffer.
     """
     try:
         proc = subprocess.Popen(
@@ -149,6 +174,15 @@ def _poll_process(
     except OSError as exc:
         return _ProcessOutcome("", "", -1, False, spawn_error=f"failed to run pi: {exc}")
 
+    out_buf: list[str] = []
+    err_buf: list[str] = []
+    readers = (
+        threading.Thread(target=_drain, args=(proc.stdout, out_buf), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, err_buf), daemon=True),
+    )
+    for reader in readers:
+        reader.start()
+
     deadline = time.monotonic() + max(timeout_sec, 0.0)
     timed_out = False
     while proc.poll() is None:
@@ -158,15 +192,16 @@ def _poll_process(
             break
         time.sleep(_POLL_INTERVAL_SEC)
 
-    try:
-        stdout, stderr = proc.communicate(timeout=_TERMINATE_GRACE_SEC)
-    except subprocess.TimeoutExpired:
-        _terminate(proc)
-        stdout, stderr = proc.communicate()
+    # Reap the process, then let the drain threads finish (the pipes hit EOF once
+    # the child exits or is terminated).
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_TERMINATE_GRACE_SEC)
+    for reader in readers:
+        reader.join(timeout=_TERMINATE_GRACE_SEC)
 
     return _ProcessOutcome(
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout="".join(out_buf),
+        stderr="".join(err_buf),
         returncode=proc.returncode if proc.returncode is not None else -1,
         timed_out=timed_out,
     )

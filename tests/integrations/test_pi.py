@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -88,18 +90,17 @@ _POPEN = "integrations.pi.client.subprocess.Popen"
 
 
 class _FakePopen:
-    """Minimal Popen stand-in for the client's poll loop."""
+    """Minimal Popen stand-in: drainable stdout/stderr pipes + poll/wait."""
 
     def __init__(
         self, *, stdout: str = "", stderr: str = "", returncode: int = 0, hang: bool = False
     ) -> None:
-        self._out, self._err, self._rc, self._hang = stdout, stderr, returncode, hang
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self._rc, self._hang = returncode, hang
 
     def poll(self) -> int | None:
         return None if self._hang else self._rc
-
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:  # noqa: ARG002
-        return self._out, self._err
 
     def terminate(self) -> None:
         self._hang = False
@@ -188,6 +189,22 @@ def test_run_pi_coding_task_nonzero_exit(
     result = run_pi_coding_task("x", workspace=str(tmp_path), model="bogus", timeout_sec=60)
     assert result.success is False
     assert "model not found" in (result.error or "")
+
+
+def test_poll_process_drains_large_output_without_deadlock(tmp_path: Path) -> None:
+    """Regression: a child that writes more than the OS pipe buffer must not
+    deadlock and time out. Without concurrent draining this hangs at ~64 KB."""
+    from integrations.pi.client import _poll_process
+
+    payload = 256 * 1024  # 256 KB, well over the ~64 KB pipe buffer
+    code = f"import sys; sys.stdout.write('x' * {payload}); sys.stderr.write('y' * {payload})"
+    outcome = _poll_process(
+        [sys.executable, "-c", code], cwd=str(tmp_path), env=dict(os.environ), timeout_sec=30
+    )
+    assert outcome.timed_out is False
+    assert outcome.returncode == 0
+    assert len(outcome.stdout) == payload
+    assert len(outcome.stderr) == payload
 
 
 # --------------------------------------------------------------------------- #

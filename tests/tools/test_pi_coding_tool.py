@@ -9,17 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from integrations.pi import PiCodingResult
-from tools.pi_coding_tool import (
-    PiCodingTool,
-    _PiToolError,
-    _validate_model,
-    _validate_task,
-    _validate_workspace,
-    pi_coding_task,
-)
+from tools.pi_coding_tool import PiCodingTool, pi_coding_task
+from tools.pi_coding_tool.errors import PiCodingError
+from tools.pi_coding_tool.validation import validate_model, validate_task, validate_workspace
 
-_VERIFY = "tools.pi_coding_tool.verify_pi_coding"
-_RUN = "tools.pi_coding_tool.run_pi_coding_task"
+_VERIFY = "tools.pi_coding_tool.runner.verify_pi_coding"
+_RUN = "tools.pi_coding_tool.runner.run_pi_coding_task"
 
 
 # --------------------------------------------------------------------------- #
@@ -49,29 +44,29 @@ def test_is_available_off_by_default_then_opt_in() -> None:
 # validators
 # --------------------------------------------------------------------------- #
 def test_validate_task() -> None:
-    assert _validate_task("  do it  ") == "do it"
-    with pytest.raises(_PiToolError) as empty:
-        _validate_task("   ")
+    assert validate_task("  do it  ") == "do it"
+    with pytest.raises(PiCodingError) as empty:
+        validate_task("   ")
     assert empty.value.kind == "invalid_input"
-    with pytest.raises(_PiToolError) as too_long:
-        _validate_task("x" * 5000)
+    with pytest.raises(PiCodingError) as too_long:
+        validate_task("x" * 5000)
     assert too_long.value.kind == "invalid_input"
 
 
 def test_validate_workspace(tmp_path: Path) -> None:
-    assert _validate_workspace(str(tmp_path)) == str(tmp_path)
-    with pytest.raises(_PiToolError) as missing:
-        _validate_workspace("/no/such/path/xyz123")
+    assert validate_workspace(str(tmp_path)) == str(tmp_path)
+    with pytest.raises(PiCodingError) as missing:
+        validate_workspace("/no/such/path/xyz123")
     assert missing.value.kind == "invalid_input"
 
 
 def test_validate_model() -> None:
-    assert _validate_model("anthropic/claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
-    with pytest.raises(_PiToolError) as bad:
-        _validate_model("bad model")
+    assert validate_model("anthropic/claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+    with pytest.raises(PiCodingError) as bad:
+        validate_model("bad model")
     assert bad.value.kind == "invalid_input"
     with patch.dict(os.environ, {"PI_CODING_MODEL": ""}, clear=False):
-        assert _validate_model("") is None
+        assert validate_model("") is None
 
 
 # --------------------------------------------------------------------------- #
