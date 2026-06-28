@@ -1105,6 +1105,7 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "pagerduty_incidents",
         "pagerduty_oncall",
         "pagerduty_services",
+        "pi_coding_task",
         "prefect_flow_runs",
         "prefect_worker_health",
         "query_betterstack_logs",

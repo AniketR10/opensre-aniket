@@ -158,6 +158,7 @@
               "jenkins",
               "jira",
               "integrations/trello",
+              "pi-coding",
               "vercel"
             ]
           },
