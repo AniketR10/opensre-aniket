@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from integrations.pi import PiCodingResult
 from tools.fix_sentry_issue import FixSentryIssueTool, fix_sentry_issue
 from tools.fix_sentry_issue.context import gather_issue_context
@@ -93,10 +95,40 @@ def test_run_sentry_unavailable(_mock_cfg: MagicMock) -> None:
 
 @patch(_GET_ISSUE, return_value={})
 @patch(_CONFIG, return_value=MagicMock())
-def test_run_issue_not_found(_mock_cfg: MagicMock, _mock_issue: MagicMock) -> None:
+def test_run_issue_not_found_empty_response(_mock_cfg: MagicMock, _mock_issue: MagicMock) -> None:
     with patch.dict(os.environ, {"PI_ISSUE_FIX_ENABLED": "1"}, clear=False):
         out = fix_sentry_issue.run(sentry_url=_URL)
     assert out["error_kind"] == "issue_not_found"
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "https://acme.sentry.io/api/0/issues/12345/")
+    return httpx.HTTPStatusError("err", request=req, response=httpx.Response(status, request=req))
+
+
+@patch(_GET_ISSUE, side_effect=_http_status_error(404))
+@patch(_CONFIG, return_value=MagicMock())
+def test_run_issue_not_found_on_http_404(_mock_cfg: MagicMock, _mock_issue: MagicMock) -> None:
+    # The common real failure: valid URL, issue id doesn't exist -> Sentry 404.
+    with patch.dict(os.environ, {"PI_ISSUE_FIX_ENABLED": "1"}, clear=False):
+        out = fix_sentry_issue.run(sentry_url=_URL)
+    assert out["error_kind"] == "issue_not_found"
+
+
+@patch(_GET_ISSUE, side_effect=_http_status_error(403))
+@patch(_CONFIG, return_value=MagicMock())
+def test_run_sentry_auth_error_on_http_403(_mock_cfg: MagicMock, _mock_issue: MagicMock) -> None:
+    with patch.dict(os.environ, {"PI_ISSUE_FIX_ENABLED": "1"}, clear=False):
+        out = fix_sentry_issue.run(sentry_url=_URL)
+    assert out["error_kind"] == "sentry_unavailable"
+
+
+@patch(_GET_ISSUE, side_effect=httpx.ConnectError("boom"))
+@patch(_CONFIG, return_value=MagicMock())
+def test_run_sentry_network_error(_mock_cfg: MagicMock, _mock_issue: MagicMock) -> None:
+    with patch.dict(os.environ, {"PI_ISSUE_FIX_ENABLED": "1"}, clear=False):
+        out = fix_sentry_issue.run(sentry_url=_URL)
+    assert out["error_kind"] == "sentry_unavailable"
 
 
 @patch(_VERIFY, return_value=(False, "pi not installed"))
