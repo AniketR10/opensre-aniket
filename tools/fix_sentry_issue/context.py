@@ -131,5 +131,9 @@ def gather_issue_context(sentry_url: str | None) -> IssueContext:
         )
 
     config = _resolve_config()
+    if ref.organization_slug:
+        # The org in the issue URL is authoritative for *which* org to query; the
+        # env token still authenticates. Falls back to the configured org otherwise.
+        config = config.model_copy(update={"organization_slug": ref.organization_slug})
     issue = _fetch_issue(config, ref.issue_id)
     return IssueContext(issue_id=ref.issue_id, task=_build_task(issue))

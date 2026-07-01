@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tools.base import BaseTool
+from core.tool_framework.base import BaseTool
 from tools.fix_sentry_issue.context import gather_issue_context
 from tools.fix_sentry_issue.errors import FixIssueError
 from tools.fix_sentry_issue.runner import (

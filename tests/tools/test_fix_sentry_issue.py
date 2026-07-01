@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 from integrations.pi import PiCodingResult
+from integrations.sentry import SentryConfig
 from tools.fix_sentry_issue import FixSentryIssueTool, fix_sentry_issue
 from tools.fix_sentry_issue.context import gather_issue_context
 
@@ -67,6 +68,15 @@ def test_gather_issue_context_builds_masked_task(
     assert "Issue:" in ctx.task
     assert "TypeError" in ctx.task
     assert "app/handlers.py" in ctx.task
+
+
+@patch(_GET_ISSUE, return_value=_ISSUE)
+@patch(_CONFIG, return_value=SentryConfig(organization_slug="env-org", auth_token="tok"))
+def test_gather_uses_org_from_url_over_config(_mock_cfg: MagicMock, mock_issue: MagicMock) -> None:
+    # URL org is "acme"; config org is "env-org" — the URL must win.
+    gather_issue_context("https://acme.sentry.io/issues/12345/")
+    used_config = mock_issue.call_args.kwargs["config"]
+    assert used_config.organization_slug == "acme"
 
 
 # --------------------------------------------------------------------------- #
