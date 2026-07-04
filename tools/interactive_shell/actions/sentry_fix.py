@@ -31,14 +31,20 @@ def _render_result(console: Any, out: dict[str, Any]) -> None:
             f"[red]Could not fix the Sentry issue[/] "
             f"({out.get('error_kind') or 'error'}): {out.get('error') or ''}"
         )
-        # Point the user at their fix so they can recover manually. The change may be
-        # committed (push/PR failed) or just staged (commit failed) — either way it is
-        # on this branch, so keep the guidance accurate for both.
+        # Point the user at their fix so they can recover manually, with guidance
+        # matched to how far shipping got: a PR-creation failure means the branch is
+        # already pushed (just open the PR); any earlier failure leaves it local.
         if out.get("branch_name"):
-            console.print(
-                f"[dim]Your fix is on branch [cyan]{out['branch_name']}[/] — "
-                "inspect it, then push and open the PR manually.[/]"
-            )
+            if out.get("error_kind") == "pr_failed":
+                console.print(
+                    f"[dim]Your fix is pushed to branch [cyan]{out['branch_name']}[/] — "
+                    "open the PR manually.[/]"
+                )
+            else:
+                console.print(
+                    f"[dim]Your fix is on branch [cyan]{out['branch_name']}[/] — "
+                    "inspect it, then push and open the PR manually.[/]"
+                )
         elif out.get("changed_files"):
             console.print("[dim]The proposed fix is still in your working tree.[/]")
         return

@@ -61,12 +61,17 @@ def _token_auth_env(github_token: str) -> dict[str, str]:
     credential helper might have cached (the usual cause of a 403 on push).
     """
     basic = base64.b64encode(f"x-access-token:{github_token}".encode()).decode()
-    return {
-        **os.environ,
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.extraheader",
-        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
-    }
+    env = dict(os.environ)
+    # Append at the next free index rather than clobbering an existing
+    # GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* the caller may already rely on.
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0") or "0")
+    except ValueError:
+        count = 0
+    env[f"GIT_CONFIG_KEY_{count}"] = "http.extraheader"
+    env[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Basic {basic}"
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return env
 
 
 def is_git_repo(workspace: str) -> bool:
@@ -89,12 +94,34 @@ def current_branch(workspace: str) -> str:
     return "" if branch in ("", "HEAD") else branch
 
 
-def default_branch(workspace: str) -> str:
-    """Best-effort repo default branch (``origin/HEAD`` target), else current branch."""
+def _remote_default_branch(workspace: str, github_token: str | None) -> str:
+    """The remote's default branch via ``ls-remote --symref`` (authoritative)."""
+    env = _token_auth_env(github_token) if github_token else None
+    result = _run_git(workspace, "ls-remote", "--symref", "origin", "HEAD", env=env)
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        # "ref: refs/heads/main\tHEAD"
+        if line.startswith("ref:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return parts[1].removeprefix("refs/heads/")
+    return ""
+
+
+def default_branch(workspace: str, *, github_token: str | None = None) -> str:
+    """Resolve the repo's default branch (the PR base).
+
+    Prefers the local ``origin/HEAD`` pointer; if it isn't configured (common on
+    fresh clones), asks the remote directly so we don't silently target the user's
+    current feature branch. Falls back to the current branch only when the remote
+    is unreachable.
+    """
     result = _run_git(workspace, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().removeprefix("origin/")
-    return current_branch(workspace)
+    remote = _remote_default_branch(workspace, github_token)
+    return remote or current_branch(workspace)
 
 
 def short_head(workspace: str) -> str:

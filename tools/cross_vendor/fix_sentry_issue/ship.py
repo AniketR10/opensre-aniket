@@ -123,7 +123,7 @@ def ship_fix(
     # back to a stale cached git credential (the usual cause of a 403 on push).
     token = resolve_github_token(github_token)
 
-    base = default_branch(workspace)
+    base = default_branch(workspace, github_token=token or None)
     branch = build_branch_name(workspace, issue_id)
 
     create_branch(workspace, branch, base_default=base)

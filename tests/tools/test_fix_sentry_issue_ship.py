@@ -182,13 +182,48 @@ def test_commit_paths_isolates_to_given_files(tmp_path: Path) -> None:
     assert "other.txt" in status
 
 
-def test_token_auth_env_injects_header_without_leaking_token() -> None:
+def test_token_auth_env_injects_header_without_leaking_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     env = git_ops._token_auth_env("secret-token")
     assert env["GIT_CONFIG_KEY_0"] == "http.extraheader"
     header = env["GIT_CONFIG_VALUE_0"]
     assert header.startswith("Authorization: Basic ")
     # The raw token must never appear verbatim (it's base64'd behind the header).
     assert "secret-token" not in header
+
+
+def test_token_auth_env_preserves_existing_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A caller already using GIT_CONFIG_* env config must not be clobbered.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Someone")
+    env = git_ops._token_auth_env("tok")
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "user.name"  # preserved
+    assert env["GIT_CONFIG_VALUE_0"] == "Someone"
+    assert env["GIT_CONFIG_KEY_1"] == "http.extraheader"  # appended at the next free index
+
+
+def test_default_branch_falls_back_to_remote_head(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    bare = tmp_path / "remote.git"
+    # No local origin/HEAD pointer -> the fast symbolic-ref path fails.
+    _git(work, "remote", "set-head", "origin", "--delete")
+    # Set the bare remote's default via explicit --git-dir (cwd into a bare repo can
+    # be blocked by safe.bareRepository).
+    subprocess.run(
+        ["git", "--git-dir", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # On a feature branch, so the last-resort current-branch fallback is NOT 'main'.
+    _git(work, "checkout", "-b", "feature-x")
+
+    # Resolves the real default from the remote instead of the current branch.
+    assert git_ops.default_branch(str(work)) == "main"
 
 
 def test_push_branch_uses_token_env_when_provided(tmp_path: Path) -> None:
@@ -206,8 +241,13 @@ def test_push_branch_uses_token_env_when_provided(tmp_path: Path) -> None:
         )
 
     assert captured["args"][0] == "push"
-    assert captured["env"] is not None
-    assert captured["env"]["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    env = captured["env"]
+    assert env is not None
+    # The auth header is injected at some index (not necessarily 0, if the ambient
+    # env already had GIT_CONFIG_* entries).
+    count = int(env["GIT_CONFIG_COUNT"])
+    keys = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(count)]
+    assert "http.extraheader" in keys
 
 
 def test_push_branch_no_env_without_token(tmp_path: Path) -> None:

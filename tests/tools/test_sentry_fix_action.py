@@ -112,6 +112,25 @@ def test_renders_branch_recovery_on_post_commit_failure(mock_run: MagicMock) -> 
     assert "push and open the PR manually" in out
 
 
+@patch(_TOOL_RUN)
+def test_renders_pr_failed_recovery_says_already_pushed(mock_run: MagicMock) -> None:
+    mock_run.return_value = {
+        "success": False,
+        "error_kind": "pr_failed",
+        "error": "422 validation failed",
+        "changed_files": ["a.py"],
+        "branch_name": "opensre/sentry-fix-12345-abc",
+    }
+    ctx, buf = _ctx()
+    sentry_fix.execute_sentry_fix_tool({"sentry_url": _URL, "open_pr": True}, ctx)
+
+    out = buf.getvalue()
+    # The branch is already pushed, so guidance is "open the PR", not "push it".
+    assert "pushed to branch" in out
+    assert "open the PR manually" in out
+    assert "push and open" not in out
+
+
 # --------------------------------------------------------------------------- #
 # run_sentry_fix (action-context wrapper)
 # --------------------------------------------------------------------------- #
