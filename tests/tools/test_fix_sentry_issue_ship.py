@@ -197,12 +197,13 @@ def test_commit_paths_isolates_to_given_files(tmp_path: Path) -> None:
     assert "other.txt" in status
 
 
-def test_token_auth_env_injects_header_without_leaking_token(
+def test_token_auth_env_injects_host_scoped_header_without_leaking_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
-    env = git_ops._token_auth_env("secret-token")
-    assert env["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    env = git_ops._token_auth_env("secret-token", "https://github.com/")
+    # Header is scoped to the host, not a global http.extraheader.
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
     header = env["GIT_CONFIG_VALUE_0"]
     assert header.startswith("Authorization: Basic ")
     # The raw token must never appear verbatim (it's base64'd behind the header).
@@ -214,11 +215,11 @@ def test_token_auth_env_preserves_existing_git_config(monkeypatch: pytest.Monkey
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Someone")
-    env = git_ops._token_auth_env("tok")
+    env = git_ops._token_auth_env("tok", "https://github.com/")
     assert env["GIT_CONFIG_COUNT"] == "2"
     assert env["GIT_CONFIG_KEY_0"] == "user.name"  # preserved
     assert env["GIT_CONFIG_VALUE_0"] == "Someone"
-    assert env["GIT_CONFIG_KEY_1"] == "http.extraheader"  # appended at the next free index
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"  # appended
 
 
 def test_default_branch_falls_back_to_remote_head(tmp_path: Path) -> None:
@@ -241,16 +242,27 @@ def test_default_branch_falls_back_to_remote_head(tmp_path: Path) -> None:
     assert git_ops.default_branch(str(work)) == "main"
 
 
-def test_push_branch_uses_token_env_when_provided(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    captured: dict[str, Any] = {}
+def _fake_run_git_factory(captured: dict[str, Any], origin_url: str):
+    """Fake _run_git that reports *origin_url* for 'remote get-url' and records the push."""
 
-    def _fake_run_git(_ws: str, *args: str, env: Any = None) -> Any:
+    def _fake(_ws: str, *args: str, env: Any = None, timeout: Any = None) -> Any:
+        if args[:2] == ("remote", "get-url"):
+            return subprocess.CompletedProcess(list(args), 0, f"{origin_url}\n", "")
         captured["args"] = args
         captured["env"] = env
-        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(list(args), 0, "", "")
 
-    with patch.object(git_ops, "_run_git", _fake_run_git):
+    return _fake
+
+
+def test_push_branch_scopes_token_header_to_https_origin_host(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    with patch.object(
+        git_ops,
+        "_run_git",
+        _fake_run_git_factory(captured, "https://github.com/acme/app.git"),
+    ):
         git_ops.push_branch(
             str(work), "opensre/sentry-fix-1-x", base_default="main", github_token="tok"
         )
@@ -258,11 +270,24 @@ def test_push_branch_uses_token_env_when_provided(tmp_path: Path) -> None:
     assert captured["args"][0] == "push"
     env = captured["env"]
     assert env is not None
-    # The auth header is injected at some index (not necessarily 0, if the ambient
-    # env already had GIT_CONFIG_* entries).
     count = int(env["GIT_CONFIG_COUNT"])
     keys = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(count)]
-    assert "http.extraheader" in keys
+    # Scoped to the origin host, never a global http.extraheader.
+    assert "http.https://github.com/.extraheader" in keys
+    assert "http.extraheader" not in keys
+
+
+def test_push_branch_skips_token_header_for_non_https_origin(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    captured: dict[str, Any] = {}
+    # SSH remote -> the token must NOT be injected (transport authenticates itself).
+    with patch.object(
+        git_ops, "_run_git", _fake_run_git_factory(captured, "git@github.com:acme/app.git")
+    ):
+        git_ops.push_branch(
+            str(work), "opensre/sentry-fix-1-x", base_default="main", github_token="tok"
+        )
+    assert captured["env"] is None
 
 
 def test_push_branch_no_env_without_token(tmp_path: Path) -> None:

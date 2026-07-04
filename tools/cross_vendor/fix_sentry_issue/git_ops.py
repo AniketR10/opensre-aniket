@@ -15,6 +15,7 @@ import base64
 import os
 import subprocess
 from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 from tools.cross_vendor.fix_sentry_issue.errors import (
     ERR_BRANCH_FAILED,
@@ -58,13 +59,26 @@ def _run_git(
         ) from exc
 
 
-def _token_auth_env(github_token: str) -> dict[str, str]:
-    """Env that injects an HTTP Authorization header for this push only.
+def _remote_https_base(workspace: str, remote: str = "origin") -> str:
+    """``scheme://host/`` of *remote* when it uses HTTP(S), else "" (SSH/file/etc.)."""
+    result = _run_git(workspace, "remote", "get-url", remote)
+    if result.returncode != 0:
+        return ""
+    parsed = urlsplit(result.stdout.strip())
+    if parsed.scheme in ("http", "https") and parsed.hostname:
+        return f"{parsed.scheme}://{parsed.hostname}/"
+    return ""
 
-    Uses git's ``GIT_CONFIG_*`` env-config so the token never appears in argv,
-    the remote URL, .git/config, or git's output. This makes the push use the
-    *provided* token instead of whatever stale credential the local git
-    credential helper might have cached (the usual cause of a 403 on push).
+
+def _token_auth_env(github_token: str, base_url: str) -> dict[str, str]:
+    """Env that injects an HTTP Authorization header scoped to *base_url* for this call.
+
+    Uses git's ``GIT_CONFIG_*`` env-config so the token never appears in argv, the
+    remote URL, .git/config, or git's output. The header is scoped via
+    ``http.<base_url>.extraheader`` so the token is only sent to that host and never
+    forwarded to other HTTPS remotes or redirects. This makes the request use the
+    *provided* token instead of whatever stale credential the local git credential
+    helper might have cached (the usual cause of a 403 on push).
     """
     basic = base64.b64encode(f"x-access-token:{github_token}".encode()).decode()
     env = dict(os.environ)
@@ -74,7 +88,7 @@ def _token_auth_env(github_token: str) -> dict[str, str]:
         count = int(env.get("GIT_CONFIG_COUNT", "0") or "0")
     except ValueError:
         count = 0
-    env[f"GIT_CONFIG_KEY_{count}"] = "http.extraheader"
+    env[f"GIT_CONFIG_KEY_{count}"] = f"http.{base_url}.extraheader"
     env[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Basic {basic}"
     env["GIT_CONFIG_COUNT"] = str(count + 1)
     return env
@@ -107,7 +121,8 @@ def _remote_default_branch(workspace: str, github_token: str | None) -> str:
     unreachable remote never stalls or aborts shipping — the caller falls back to
     the current branch.
     """
-    env = _token_auth_env(github_token) if github_token else None
+    base = _remote_https_base(workspace, "origin")
+    env = _token_auth_env(github_token, base) if (github_token and base) else None
     try:
         result = _run_git(
             workspace,
@@ -253,11 +268,17 @@ def push_branch(
 ) -> None:
     """Push *branch* to *remote* with upstream tracking. Never force, never base branch.
 
-    When *github_token* is given, the push authenticates with that token (via an
-    ephemeral HTTP header) instead of the machine's cached git credentials.
+    When *github_token* is given and *remote* is an HTTPS URL, the push
+    authenticates with that token (via an ephemeral, host-scoped HTTP header)
+    instead of the machine's cached git credentials. For SSH/other remotes the
+    token is not injected (the transport authenticates itself).
     """
     assert_not_protected(branch, protected_extra=base_default)
-    env = _token_auth_env(github_token) if github_token else None
+    env = None
+    if github_token:
+        base = _remote_https_base(workspace, remote)
+        if base:
+            env = _token_auth_env(github_token, base)
     result = _run_git(workspace, "push", "--set-upstream", remote, branch, env=env)
     if result.returncode != 0:
         raise FixIssueError(
