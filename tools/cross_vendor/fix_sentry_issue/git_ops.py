@@ -27,12 +27,18 @@ from tools.cross_vendor.fix_sentry_issue.errors import (
 )
 
 _GIT_TIMEOUT_SEC = 60
+# Networked lookups get a tighter bound so a slow/unreachable remote can't stall
+# the whole flow (they always have a safe local fallback).
+_REMOTE_TIMEOUT_SEC = 15
 # Branch names we refuse to create or push to, on top of the resolved default.
 _PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "trunk"})
 
 
 def _run_git(
-    workspace: str, *args: str, env: dict[str, str] | None = None
+    workspace: str,
+    *args: str,
+    env: dict[str, str] | None = None,
+    timeout: float = _GIT_TIMEOUT_SEC,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git <args>`` in *workspace*; raise FixIssueError if git is missing."""
     try:
@@ -41,14 +47,14 @@ def _run_git(
             cwd=workspace,
             capture_output=True,
             text=True,
-            timeout=_GIT_TIMEOUT_SEC,
+            timeout=timeout,
             env=env,
         )
     except FileNotFoundError as exc:
         raise FixIssueError(ERR_GIT_UNAVAILABLE, "git is not installed or not on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
         raise FixIssueError(
-            ERR_GIT_UNAVAILABLE, f"git command timed out after {_GIT_TIMEOUT_SEC}s."
+            ERR_GIT_UNAVAILABLE, f"git command timed out after {timeout:.0f}s."
         ) from exc
 
 
@@ -95,9 +101,25 @@ def current_branch(workspace: str) -> str:
 
 
 def _remote_default_branch(workspace: str, github_token: str | None) -> str:
-    """The remote's default branch via ``ls-remote --symref`` (authoritative)."""
+    """The remote's default branch via ``ls-remote --symref`` (authoritative).
+
+    Bounded by a short timeout and returns "" on any failure/timeout, so a slow or
+    unreachable remote never stalls or aborts shipping — the caller falls back to
+    the current branch.
+    """
     env = _token_auth_env(github_token) if github_token else None
-    result = _run_git(workspace, "ls-remote", "--symref", "origin", "HEAD", env=env)
+    try:
+        result = _run_git(
+            workspace,
+            "ls-remote",
+            "--symref",
+            "origin",
+            "HEAD",
+            env=env,
+            timeout=_REMOTE_TIMEOUT_SEC,
+        )
+    except FixIssueError:
+        return ""
     if result.returncode != 0:
         return ""
     for line in result.stdout.splitlines():
@@ -163,10 +185,18 @@ def file_fingerprints(workspace: str, paths: Sequence[str]) -> dict[str, str]:
     the run (hash differs) versus left it untouched (same hash) — so a fix Pi makes
     to a pre-existing WIP file is still committed, while untouched WIP is skipped.
     """
-    fingerprints: dict[str, str] = {}
-    for path in paths:
-        result = _run_git(workspace, "hash-object", "--", path)
-        fingerprints[path] = result.stdout.strip() if result.returncode == 0 else ""
+    fingerprints: dict[str, str] = dict.fromkeys(paths, "")
+    # Hash all files in a single git invocation (one process, not one per file).
+    # Deleted/unreadable paths are filtered out first so they don't fail the batch;
+    # they keep the "" fingerprint.
+    existing = [p for p in paths if os.path.isfile(os.path.join(workspace, p))]
+    if not existing:
+        return fingerprints
+    result = _run_git(workspace, "hash-object", "--", *existing)
+    hashes = result.stdout.splitlines()
+    if result.returncode == 0 and len(hashes) == len(existing):
+        for path, digest in zip(existing, hashes):
+            fingerprints[path] = digest.strip()
     return fingerprints
 
 

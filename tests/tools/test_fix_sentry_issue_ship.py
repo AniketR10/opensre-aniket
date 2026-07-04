@@ -111,6 +111,21 @@ def test_changed_paths_handles_quoted_filenames(tmp_path: Path) -> None:
     assert weird not in git_ops.changed_paths(str(work))
 
 
+def test_file_fingerprints_batches_and_tolerates_missing(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    (work / "a.txt").write_text("aaa\n")
+    (work / "b.txt").write_text("bbb\n")
+
+    fps = git_ops.file_fingerprints(str(work), ["a.txt", "b.txt", "gone.txt"])
+    # Existing files get real, distinct hashes; a missing path keeps "".
+    assert fps["a.txt"] and fps["b.txt"]
+    assert fps["a.txt"] != fps["b.txt"]
+    assert fps["gone.txt"] == ""
+    # Hash reflects content: same bytes -> same hash.
+    (work / "c.txt").write_text("aaa\n")
+    assert git_ops.file_fingerprints(str(work), ["c.txt"])["c.txt"] == fps["a.txt"]
+
+
 @pytest.mark.parametrize("branch", ["main", "master", "develop", "trunk", "", "   "])
 def test_assert_not_protected_rejects_base_and_empty(branch: str) -> None:
     with pytest.raises(FixIssueError) as exc:
