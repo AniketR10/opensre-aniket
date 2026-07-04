@@ -32,18 +32,27 @@ def _render_result(console: Any, out: dict[str, Any]) -> None:
             f"({out.get('error_kind') or 'error'}): {out.get('error') or ''}"
         )
         # Point the user at their fix so they can recover manually, with guidance
-        # matched to how far shipping got: a PR-creation failure means the branch is
-        # already pushed (just open the PR); any earlier failure leaves it local.
-        if out.get("branch_name"):
-            if out.get("error_kind") == "pr_failed":
+        # matched to how far shipping got on the new branch:
+        #   commit_failed -> on the branch but NOT committed (edits staged only)
+        #   push_failed   -> committed but not pushed
+        #   pr_failed     -> pushed, only the PR call failed
+        branch = out.get("branch_name")
+        if branch:
+            kind = out.get("error_kind")
+            if kind == "commit_failed":
                 console.print(
-                    f"[dim]Your fix is pushed to branch [cyan]{out['branch_name']}[/] — "
+                    f"[dim]Your changes are on branch [cyan]{branch}[/] but not committed — "
+                    "commit them, push, and open the PR manually.[/]"
+                )
+            elif kind == "pr_failed":
+                console.print(
+                    f"[dim]Your fix is pushed to branch [cyan]{branch}[/] — "
                     "open the PR manually.[/]"
                 )
             else:
                 console.print(
-                    f"[dim]Your fix is on branch [cyan]{out['branch_name']}[/] — "
-                    "inspect it, then push and open the PR manually.[/]"
+                    f"[dim]Your fix is committed on branch [cyan]{branch}[/] — "
+                    "push it and open the PR manually.[/]"
                 )
         elif out.get("changed_files"):
             console.print("[dim]The proposed fix is still in your working tree.[/]")

@@ -95,7 +95,7 @@ def test_renders_error(mock_run: MagicMock) -> None:
 
 
 @patch(_TOOL_RUN)
-def test_renders_branch_recovery_on_post_commit_failure(mock_run: MagicMock) -> None:
+def test_renders_push_failure_says_committed_needs_push(mock_run: MagicMock) -> None:
     mock_run.return_value = {
         "success": False,
         "error_kind": "push_failed",
@@ -108,8 +108,26 @@ def test_renders_branch_recovery_on_post_commit_failure(mock_run: MagicMock) -> 
 
     out = buf.getvalue()
     assert "opensre/sentry-fix-12345-abc" in out
-    assert "on branch" in out
-    assert "push and open the PR manually" in out
+    assert "committed on branch" in out
+    assert "push it and open the PR manually" in out
+
+
+@patch(_TOOL_RUN)
+def test_renders_commit_failure_says_not_committed(mock_run: MagicMock) -> None:
+    mock_run.return_value = {
+        "success": False,
+        "error_kind": "commit_failed",
+        "error": "git commit failed",
+        "changed_files": ["a.py"],
+        "branch_name": "opensre/sentry-fix-12345-abc",
+    }
+    ctx, buf = _ctx()
+    sentry_fix.execute_sentry_fix_tool({"sentry_url": _URL, "open_pr": True}, ctx)
+
+    out = buf.getvalue()
+    # Nothing was committed, so the user must commit first — not just push.
+    assert "not committed" in out
+    assert "commit them, push, and open the PR manually" in out
 
 
 @patch(_TOOL_RUN)
