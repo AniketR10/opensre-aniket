@@ -62,13 +62,17 @@ def _run_git(
 
 
 def _remote_https_base(workspace: str, remote: str = "origin") -> str:
-    """``scheme://host/`` of *remote* when it uses HTTP(S), else "" (SSH/file/etc.)."""
+    """``https://host/`` of *remote* when it uses HTTPS, else "" (http/SSH/file/etc.).
+
+    Only HTTPS qualifies: injecting the token for a plaintext ``http://`` remote
+    would send the credential in cleartext on the wire.
+    """
     result = _run_git(workspace, "remote", "get-url", remote)
     if result.returncode != 0:
         return ""
     parsed = urlsplit(result.stdout.strip())
-    if parsed.scheme in ("http", "https") and parsed.hostname:
-        return f"{parsed.scheme}://{parsed.hostname}/"
+    if parsed.scheme == "https" and parsed.hostname:
+        return f"https://{parsed.hostname}/"
     return ""
 
 

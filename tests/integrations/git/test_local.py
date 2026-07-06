@@ -220,12 +220,20 @@ def test_push_branch_scopes_token_header_to_https_origin_host(tmp_path: Path) ->
     assert "http.extraheader" not in keys
 
 
-def test_push_branch_skips_token_header_for_non_https_origin(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "origin_url",
+    [
+        "git@github.com:acme/app.git",  # SSH
+        "http://gitea.local/acme/app.git",  # plaintext HTTP -> never send the token
+        "/srv/repos/app.git",  # local/file
+    ],
+)
+def test_push_branch_skips_token_header_for_non_https_origin(
+    tmp_path: Path, origin_url: str
+) -> None:
     work = _init_repo(tmp_path)
     captured: dict[str, Any] = {}
-    with patch.object(
-        gitlocal, "_run_git", _fake_run_git_factory(captured, "git@github.com:acme/app.git")
-    ):
+    with patch.object(gitlocal, "_run_git", _fake_run_git_factory(captured, origin_url)):
         gitlocal.push_branch(str(work), "opensre/sentry-fix-1-x", base_default="main", token="tok")
     assert captured["env"] is None
 
