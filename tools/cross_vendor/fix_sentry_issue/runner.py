@@ -11,6 +11,13 @@ import os
 from collections.abc import Mapping
 from typing import Any, Final
 
+from integrations.git import (
+    GitCommandError,
+    changed_paths,
+    ensure_git_repo,
+    file_fingerprints,
+    is_git_repo,
+)
 from integrations.github.client import resolve_github_token
 from integrations.pi import (
     PiCodingResult,
@@ -29,12 +36,6 @@ from tools.cross_vendor.fix_sentry_issue.errors import (
     ERR_SHIP_DISABLED,
     ERR_TIMEOUT,
     FixIssueError,
-)
-from tools.cross_vendor.fix_sentry_issue.git_ops import (
-    changed_paths,
-    ensure_git_repo,
-    file_fingerprints,
-    is_git_repo,
 )
 from tools.cross_vendor.fix_sentry_issue.ship import ShipResult, ship_fix
 
@@ -99,7 +100,10 @@ def ensure_ship_ready(workspace: str) -> None:
             ERR_GITHUB_TOKEN,
             "A GitHub token is required to open a PR. Set GITHUB_TOKEN or GH_TOKEN.",
         )
-    ensure_git_repo(workspace)
+    try:
+        ensure_git_repo(workspace)
+    except GitCommandError as exc:
+        raise FixIssueError(exc.kind, exc.message) from exc
 
 
 def pre_pi_changes(workspace: str) -> dict[str, str]:
@@ -107,12 +111,15 @@ def pre_pi_changes(workspace: str) -> dict[str, str]:
 
     Captured so the ship step can commit only what Pi actually creates or modifies —
     excluding pre-existing developer work-in-progress it leaves untouched, while still
-    including a file Pi edits that happened to be dirty already. Empty when the
-    workspace is clean or not a repo.
+    including a file Pi edits that happened to be dirty already. Empty (best-effort)
+    when the workspace is clean, not a repo, or git is unavailable.
     """
-    if not is_git_repo(workspace):
+    try:
+        if not is_git_repo(workspace):
+            return {}
+        return file_fingerprints(workspace, changed_paths(workspace))
+    except GitCommandError:
         return {}
-    return file_fingerprints(workspace, changed_paths(workspace))
 
 
 def run_ship(

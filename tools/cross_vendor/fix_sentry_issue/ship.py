@@ -1,10 +1,13 @@
 """Orchestrate shipping a Sentry fix: fresh branch -> commit -> push -> open PR.
 
-Runs only after the Pi coding agent has left a successful fix in the workspace
-working tree. Sequences the safe git primitives in :mod:`git_ops` and the PR call
-in :mod:`pr`, and enforces the "never touch the base branch" guarantee: the fix
-always lands on a namespaced ``opensre/sentry-fix-*`` branch, the base branch is
+Runs only after the coding agent has left a successful fix in the workspace
+working tree. Sequences the safe git primitives in :mod:`integrations.git` and the
+PR call in :mod:`pr`, and enforces the "never touch the base branch" guarantee: the
+fix always lands on a namespaced ``opensre/sentry-fix-*`` branch, the base branch is
 never committed to or pushed, and the PR is opened *into* the base branch.
+
+Git primitives raise a neutral :class:`GitCommandError`; this module maps its
+``kind`` onto the tool's :class:`FixIssueError` error surface.
 """
 
 from __future__ import annotations
@@ -13,10 +16,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from integrations.github.client import resolve_github_token
-from integrations.pi import PiCodingResult
-from tools.cross_vendor.fix_sentry_issue.errors import ERR_NO_CHANGES, FixIssueError
-from tools.cross_vendor.fix_sentry_issue.git_ops import (
+from integrations.git import (
+    GitCommandError,
     changed_paths,
     commit_paths,
     create_branch,
@@ -26,6 +27,9 @@ from tools.cross_vendor.fix_sentry_issue.git_ops import (
     push_branch,
     short_head,
 )
+from integrations.github.client import resolve_github_token
+from integrations.pi import PiCodingResult
+from tools.cross_vendor.fix_sentry_issue.errors import ERR_NO_CHANGES, FixIssueError
 from tools.cross_vendor.fix_sentry_issue.pr import PullRequest, open_pull_request
 
 _BRANCH_PREFIX = "opensre/sentry-fix"
@@ -99,41 +103,50 @@ def ship_fix(
     pre-existing WIP that Pi left untouched is excluded. Raises
     :class:`FixIssueError` (with a stable ``kind``) on any failure.
     """
-    ensure_git_repo(workspace)
-
-    # ``result.changed_files`` and a plain worktree scan both report the whole tree
-    # vs HEAD, so neither isolates Pi's edits from pre-existing WIP. Compare content
-    # hashes against the pre-run baseline: keep files Pi created or actually modified.
-    pre_existing = dict(baseline or {})
-    current = changed_paths(workspace)
-    current_fingerprints = file_fingerprints(workspace, current)
-    changed = [
-        path
-        for path in current
-        if path not in pre_existing or current_fingerprints.get(path, "") != pre_existing[path]
-    ]
-    if not changed:
-        raise FixIssueError(
-            ERR_NO_CHANGES,
-            "The Pi run left no new changes to commit (only pre-existing work-in-progress); "
-            "nothing to open a PR for.",
-        )
-
     # One credential for both the push and the PR call, so the push doesn't fall
     # back to a stale cached git credential (the usual cause of a 403 on push).
     token = resolve_github_token(github_token)
 
-    base = default_branch(workspace, github_token=token or None)
-    branch = build_branch_name(workspace, issue_id)
+    # Pre-branch phase: nothing has been created yet, so failures carry no branch.
+    try:
+        ensure_git_repo(workspace)
 
-    create_branch(workspace, branch, base_default=base)
+        # ``result.changed_files`` and a plain worktree scan both report the whole
+        # tree vs HEAD, so neither isolates the agent's edits from pre-existing WIP.
+        # Compare content hashes against the pre-run baseline: keep files the agent
+        # created or actually modified.
+        pre_existing = dict(baseline or {})
+        current = changed_paths(workspace)
+        current_fingerprints = file_fingerprints(workspace, current)
+        changed = [
+            path
+            for path in current
+            if path not in pre_existing or current_fingerprints.get(path, "") != pre_existing[path]
+        ]
+        if not changed:
+            reason = (
+                "the coding agent made no changes to the repository"
+                if not current
+                else "the coding agent left no new changes (only pre-existing work-in-progress)"
+            )
+            raise FixIssueError(
+                ERR_NO_CHANGES,
+                f"Nothing to commit — {reason}; nothing to open a PR for. "
+                "Try re-running or using a stronger PI_CODING_MODEL.",
+            )
+
+        base = default_branch(workspace, token=token or None)
+        branch = build_branch_name(workspace, issue_id)
+        create_branch(workspace, branch, base_default=base)
+    except GitCommandError as exc:
+        raise FixIssueError(exc.kind, exc.message) from exc
 
     # From here the workspace is on ``branch``. Any failure (commit, push, or PR)
     # leaves the user's changes on that branch, so tag it onto the error for the
     # caller to surface for manual recovery instead of reporting an empty branch.
     try:
         commit_paths(workspace, changed, _commit_message(issue_id, sentry_url, result.summary))
-        push_branch(workspace, branch, base_default=base, github_token=token or None)
+        push_branch(workspace, branch, base_default=base, token=token or None)
         pr = open_pull_request(
             workspace,
             head_branch=branch,
@@ -142,6 +155,8 @@ def ship_fix(
             body=_pr_body(issue_id, sentry_url, result, changed),
             github_token=token or None,
         )
+    except GitCommandError as exc:
+        raise FixIssueError(exc.kind, exc.message, branch_name=branch) from exc
     except FixIssueError as exc:
         exc.branch_name = branch
         raise

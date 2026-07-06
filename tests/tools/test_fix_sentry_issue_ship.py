@@ -10,22 +10,20 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from integrations.git import changed_paths, current_branch, file_fingerprints
+from integrations.git.errors import COMMIT_FAILED, PUSH_FAILED, GitCommandError
 from integrations.github.client import GitHubApiError
 from integrations.pi import PiCodingResult
-from tools.cross_vendor.fix_sentry_issue import fix_sentry_issue, git_ops
+from tools.cross_vendor.fix_sentry_issue import fix_sentry_issue
 from tools.cross_vendor.fix_sentry_issue.context import IssueContext
 from tools.cross_vendor.fix_sentry_issue.errors import (
-    ERR_COMMIT_FAILED,
     ERR_GITHUB_TOKEN,
     ERR_NO_CHANGES,
     ERR_PR_FAILED,
-    ERR_PROTECTED_BRANCH,
-    ERR_PUSH_FAILED,
     ERR_SHIP_DISABLED,
     FixIssueError,
 )
@@ -67,241 +65,6 @@ def _success_result() -> PiCodingResult:
         diff="diff --git a/app/handlers.py b/app/handlers.py\n",
         returncode=0,
     )
-
-
-# --------------------------------------------------------------------------- #
-# git_ops
-# --------------------------------------------------------------------------- #
-def test_git_ops_detects_repo_and_default_branch(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    assert git_ops.is_git_repo(str(work)) is True
-    assert git_ops.current_branch(str(work)) == "main"
-    assert git_ops.default_branch(str(work)) == "main"
-    assert git_ops.changed_paths(str(work)) == []
-
-
-def test_git_ops_not_a_repo(tmp_path: Path) -> None:
-    with pytest.raises(FixIssueError) as exc:
-        git_ops.ensure_git_repo(str(tmp_path))
-    assert exc.value.kind == "not_a_git_repo"
-
-
-def test_changed_paths_reports_new_and_modified(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    (work / "app").mkdir()
-    (work / "app" / "handlers.py").write_text("x = 1\n")
-    (work / "README.md").write_text("changed\n")
-    paths = set(git_ops.changed_paths(str(work)))
-    assert paths == {"app/handlers.py", "README.md"}
-
-
-def test_changed_paths_handles_quoted_filenames(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    # A space + non-ASCII byte makes git C-quote the path in default porcelain output.
-    weird = "wéird name.txt"
-    (work / weird).write_text("x\n")
-
-    # -z returns the path verbatim (unquoted), so downstream git ops match it.
-    assert weird in git_ops.changed_paths(str(work))
-    assert git_ops.file_fingerprints(str(work), [weird])[weird]  # hashable
-
-    git_ops.create_branch(str(work), "opensre/sentry-fix-1-x", base_default="main")
-    git_ops.commit_paths(str(work), [weird], "add weird")
-    # The odd path was actually committed (it is no longer reported as changed).
-    assert weird not in git_ops.changed_paths(str(work))
-
-
-def test_file_fingerprints_batches_and_tolerates_missing(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    (work / "a.txt").write_text("aaa\n")
-    (work / "b.txt").write_text("bbb\n")
-
-    fps = git_ops.file_fingerprints(str(work), ["a.txt", "b.txt", "gone.txt"])
-    # Existing files get real, distinct hashes; a missing path keeps "".
-    assert fps["a.txt"] and fps["b.txt"]
-    assert fps["a.txt"] != fps["b.txt"]
-    assert fps["gone.txt"] == ""
-    # Hash reflects content: same bytes -> same hash.
-    (work / "c.txt").write_text("aaa\n")
-    assert git_ops.file_fingerprints(str(work), ["c.txt"])["c.txt"] == fps["a.txt"]
-
-
-@pytest.mark.parametrize("branch", ["main", "master", "develop", "trunk", "", "   "])
-def test_assert_not_protected_rejects_base_and_empty(branch: str) -> None:
-    with pytest.raises(FixIssueError) as exc:
-        git_ops.assert_not_protected(branch, protected_extra="main")
-    assert exc.value.kind == ERR_PROTECTED_BRANCH
-
-
-def test_assert_not_protected_rejects_resolved_default() -> None:
-    with pytest.raises(FixIssueError):
-        git_ops.assert_not_protected("release-1.0", protected_extra="release-1.0")
-
-
-def test_create_branch_refuses_protected(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    with pytest.raises(FixIssueError) as exc:
-        git_ops.create_branch(str(work), "main", base_default="main")
-    assert exc.value.kind == ERR_PROTECTED_BRANCH
-    assert git_ops.current_branch(str(work)) == "main"  # still on base
-
-
-def test_branch_commit_push_roundtrip(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    (work / "app").mkdir()
-    (work / "app" / "handlers.py").write_text("x = 1\n")
-    branch = "opensre/sentry-fix-12345-abc"
-
-    git_ops.create_branch(str(work), branch, base_default="main")
-    git_ops.commit_paths(str(work), ["app/handlers.py"], "fix: something")
-    git_ops.push_branch(str(work), branch, base_default="main")
-
-    assert git_ops.current_branch(str(work)) == branch
-    # The branch exists on the remote; base branch is untouched.
-    remote_branches = subprocess.run(
-        ["git", "branch", "-r"], cwd=work, capture_output=True, text=True
-    ).stdout
-    assert f"origin/{branch}" in remote_branches
-
-
-def test_commit_paths_isolates_to_given_files(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    # An unrelated tracked file, committed to the base.
-    (work / "other.txt").write_text("orig\n")
-    _git(work, "add", "other.txt")
-    _git(work, "commit", "-m", "add other")
-
-    # Pi's fix (a new file) alongside unrelated WIP: README modified (unstaged)
-    # and other.txt modified AND staged.
-    (work / "app").mkdir()
-    (work / "app" / "handlers.py").write_text("fix\n")
-    (work / "README.md").write_text("wip unstaged\n")
-    (work / "other.txt").write_text("wip staged\n")
-    _git(work, "add", "other.txt")
-
-    git_ops.commit_paths(str(work), ["app/handlers.py"], "fix: only pi file")
-
-    # The commit contains ONLY Pi's file, not the unrelated WIP.
-    committed = subprocess.run(
-        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
-        cwd=work,
-        capture_output=True,
-        text=True,
-    ).stdout.split()
-    assert committed == ["app/handlers.py"]
-    # The unrelated WIP is left uncommitted in the tree.
-    status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=work, capture_output=True, text=True
-    ).stdout
-    assert "README.md" in status
-    assert "other.txt" in status
-
-
-def test_token_auth_env_injects_host_scoped_header_without_leaking_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
-    env = git_ops._token_auth_env("secret-token", "https://github.com/")
-    # Header is scoped to the host, not a global http.extraheader.
-    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
-    header = env["GIT_CONFIG_VALUE_0"]
-    assert header.startswith("Authorization: Basic ")
-    # The raw token must never appear verbatim (it's base64'd behind the header).
-    assert "secret-token" not in header
-
-
-def test_token_auth_env_preserves_existing_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A caller already using GIT_CONFIG_* env config must not be clobbered.
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Someone")
-    env = git_ops._token_auth_env("tok", "https://github.com/")
-    assert env["GIT_CONFIG_COUNT"] == "2"
-    assert env["GIT_CONFIG_KEY_0"] == "user.name"  # preserved
-    assert env["GIT_CONFIG_VALUE_0"] == "Someone"
-    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"  # appended
-
-
-def test_default_branch_falls_back_to_remote_head(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    bare = tmp_path / "remote.git"
-    # No local origin/HEAD pointer -> the fast symbolic-ref path fails.
-    _git(work, "remote", "set-head", "origin", "--delete")
-    # Set the bare remote's default via explicit --git-dir (cwd into a bare repo can
-    # be blocked by safe.bareRepository).
-    subprocess.run(
-        ["git", "--git-dir", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    # On a feature branch, so the last-resort current-branch fallback is NOT 'main'.
-    _git(work, "checkout", "-b", "feature-x")
-
-    # Resolves the real default from the remote instead of the current branch.
-    assert git_ops.default_branch(str(work)) == "main"
-
-
-def _fake_run_git_factory(captured: dict[str, Any], origin_url: str):
-    """Fake _run_git that reports *origin_url* for 'remote get-url' and records the push."""
-
-    def _fake(_ws: str, *args: str, env: Any = None, timeout: Any = None) -> Any:
-        if args[:2] == ("remote", "get-url"):
-            return subprocess.CompletedProcess(list(args), 0, f"{origin_url}\n", "")
-        captured["args"] = args
-        captured["env"] = env
-        return subprocess.CompletedProcess(list(args), 0, "", "")
-
-    return _fake
-
-
-def test_push_branch_scopes_token_header_to_https_origin_host(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    captured: dict[str, Any] = {}
-    with patch.object(
-        git_ops,
-        "_run_git",
-        _fake_run_git_factory(captured, "https://github.com/acme/app.git"),
-    ):
-        git_ops.push_branch(
-            str(work), "opensre/sentry-fix-1-x", base_default="main", github_token="tok"
-        )
-
-    assert captured["args"][0] == "push"
-    env = captured["env"]
-    assert env is not None
-    count = int(env["GIT_CONFIG_COUNT"])
-    keys = [env[f"GIT_CONFIG_KEY_{i}"] for i in range(count)]
-    # Scoped to the origin host, never a global http.extraheader.
-    assert "http.https://github.com/.extraheader" in keys
-    assert "http.extraheader" not in keys
-
-
-def test_push_branch_skips_token_header_for_non_https_origin(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    captured: dict[str, Any] = {}
-    # SSH remote -> the token must NOT be injected (transport authenticates itself).
-    with patch.object(
-        git_ops, "_run_git", _fake_run_git_factory(captured, "git@github.com:acme/app.git")
-    ):
-        git_ops.push_branch(
-            str(work), "opensre/sentry-fix-1-x", base_default="main", github_token="tok"
-        )
-    assert captured["env"] is None
-
-
-def test_push_branch_no_env_without_token(tmp_path: Path) -> None:
-    work = _init_repo(tmp_path)
-    captured: dict[str, Any] = {}
-
-    def _fake_run_git(_ws: str, *args: str, env: Any = None) -> Any:
-        captured["env"] = env
-        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
-
-    with patch.object(git_ops, "_run_git", _fake_run_git):
-        git_ops.push_branch(str(work), "opensre/sentry-fix-1-x", base_default="main")
-
-    assert captured["env"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -399,7 +162,7 @@ def test_ship_fix_full_roundtrip(tmp_path: Path) -> None:
     assert mock_pr.call_args.kwargs["base_branch"] == "main"
     assert mock_pr.call_args.kwargs["head_branch"] == ship.branch_name
     # The fix was committed onto the feature branch, not main.
-    assert git_ops.current_branch(str(work)) == ship.branch_name
+    assert current_branch(str(work)) == ship.branch_name
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"], cwd=work, capture_output=True, text=True
     ).stdout
@@ -415,7 +178,7 @@ def test_ship_fix_tags_branch_on_push_failure(tmp_path: Path) -> None:
     with (
         patch(
             "tools.cross_vendor.fix_sentry_issue.ship.push_branch",
-            side_effect=FixIssueError(ERR_PUSH_FAILED, "remote rejected"),
+            side_effect=GitCommandError(PUSH_FAILED, "remote rejected"),
         ),
         pytest.raises(FixIssueError) as exc,
     ):
@@ -425,7 +188,7 @@ def test_ship_fix_tags_branch_on_push_failure(tmp_path: Path) -> None:
     assert exc.value.branch_name is not None
     assert exc.value.branch_name.startswith("opensre/sentry-fix-12345-")
     # The commit really exists on that branch.
-    assert git_ops.current_branch(str(work)) == exc.value.branch_name
+    assert current_branch(str(work)) == exc.value.branch_name
     committed = subprocess.run(
         ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
         cwd=work,
@@ -444,7 +207,7 @@ def test_ship_fix_tags_branch_on_commit_failure(tmp_path: Path) -> None:
     with (
         patch(
             "tools.cross_vendor.fix_sentry_issue.ship.commit_paths",
-            side_effect=FixIssueError(ERR_COMMIT_FAILED, "git commit failed"),
+            side_effect=GitCommandError(COMMIT_FAILED, "git commit failed"),
         ),
         pytest.raises(FixIssueError) as exc,
     ):
@@ -454,11 +217,11 @@ def test_ship_fix_tags_branch_on_commit_failure(tmp_path: Path) -> None:
     # so the error must surface it for recovery instead of reporting None.
     assert exc.value.branch_name is not None
     assert exc.value.branch_name.startswith("opensre/sentry-fix-12345-")
-    assert git_ops.current_branch(str(work)) == exc.value.branch_name
+    assert current_branch(str(work)) == exc.value.branch_name
 
 
 def _baseline(work: Path) -> dict[str, str]:
-    return git_ops.file_fingerprints(str(work), git_ops.changed_paths(str(work)))
+    return file_fingerprints(str(work), changed_paths(str(work)))
 
 
 def test_ship_fix_commits_only_pi_files_not_unrelated_wip(tmp_path: Path) -> None:
