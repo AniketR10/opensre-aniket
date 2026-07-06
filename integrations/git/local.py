@@ -186,13 +186,18 @@ def changed_paths(workspace: str) -> list[str]:
         i += 1
         if len(record) < 3:
             continue
-        # Porcelain: "XY <path>". Rename/copy (R/C) records are followed by the
-        # original path in the next NUL-terminated token, which we skip.
+        # Porcelain: "XY <path>". Rename/copy (R/C) records carry the original path
+        # in the next NUL-terminated token.
         path = record[3:]
         if path:
             paths.append(path)
         if record[0] in ("R", "C"):
+            orig = tokens[i] if i < len(tokens) else ""
             i += 1
+            # A rename deletes the original, so it must be committed too; a copy
+            # leaves the original untouched, so it is excluded.
+            if record[0] == "R" and orig:
+                paths.append(orig)
     return paths
 
 
@@ -251,9 +256,14 @@ def commit_paths(workspace: str, paths: Sequence[str], message: str) -> None:
     if not paths:
         raise GitCommandError(COMMIT_FAILED, "no files to commit.")
 
-    add = _run_git(workspace, "add", "--", *paths)
-    if add.returncode != 0:
-        raise GitCommandError(COMMIT_FAILED, f"git add failed: {add.stderr.strip()}")
+    # Register the paths that still exist (new/modified files) so ``--only`` can
+    # commit them; deleted paths (e.g. a rename's original) are skipped here and
+    # handled by ``git commit --only``, which records their removal.
+    existing = [p for p in paths if os.path.isfile(os.path.join(workspace, p))]
+    if existing:
+        add = _run_git(workspace, "add", "--", *existing)
+        if add.returncode != 0:
+            raise GitCommandError(COMMIT_FAILED, f"git add failed: {add.stderr.strip()}")
 
     commit = _run_git(workspace, "commit", "--only", "-m", message, "--", *paths)
     if commit.returncode != 0:

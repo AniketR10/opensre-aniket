@@ -78,6 +78,28 @@ def test_changed_paths_handles_quoted_filenames(tmp_path: Path) -> None:
     assert weird not in gitlocal.changed_paths(str(work))
 
 
+def test_changed_paths_includes_both_sides_of_a_staged_rename(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    (work / "old.txt").write_text("data\n")
+    _git(work, "add", "old.txt")
+    _git(work, "commit", "-m", "add old")
+    # Stage a rename (git mv) -> porcelain reports an "R" record with new + orig.
+    _git(work, "mv", "old.txt", "new.txt")
+
+    paths = set(gitlocal.changed_paths(str(work)))
+    assert paths == {"new.txt", "old.txt"}  # the deleted original is included
+
+    # Committing exactly those paths leaves no straggler: old.txt is gone, new.txt exists.
+    gitlocal.create_branch(str(work), "opensre/sentry-fix-1-x", base_default="main")
+    gitlocal.commit_paths(str(work), list(paths), "rename old -> new")
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=work, capture_output=True, text=True
+    ).stdout.split()
+    assert "new.txt" in tracked
+    assert "old.txt" not in tracked
+    assert gitlocal.changed_paths(str(work)) == []  # clean tree, no leftover
+
+
 def test_file_fingerprints_batches_and_tolerates_missing(tmp_path: Path) -> None:
     work = _init_repo(tmp_path)
     (work / "a.txt").write_text("aaa\n")
