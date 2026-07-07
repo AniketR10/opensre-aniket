@@ -29,7 +29,7 @@ from integrations.git import (
     short_head,
 )
 from integrations.github.client import resolve_github_token
-from tools.cross_vendor.fix_sentry_issue.errors import ERR_NO_CHANGES, FixIssueError
+from tools.cross_vendor.fix_sentry_issue.errors import ERR_NO_CHANGES, ERR_PR_FAILED, FixIssueError
 from tools.cross_vendor.fix_sentry_issue.pr import PullRequest, open_pull_request
 
 _BRANCH_PREFIX = "opensre/sentry-fix"
@@ -136,6 +136,16 @@ def ship_fix(
             )
 
         base = default_branch(workspace, token=token or None)
+        if not base:
+            # Don't guess the base — a PR against the wrong branch is worse than a
+            # clear failure. This only happens when origin/HEAD is unset AND the
+            # remote is unreachable.
+            raise FixIssueError(
+                ERR_PR_FAILED,
+                "Could not determine the base branch to open the PR against "
+                "(origin/HEAD is not configured and the remote is unreachable). "
+                "Run `git remote set-head origin -a` in the workspace, or check connectivity.",
+            )
         branch = build_branch_name(workspace, issue_id)
         create_branch(workspace, branch, base_default=base)
     except GitCommandError as exc:

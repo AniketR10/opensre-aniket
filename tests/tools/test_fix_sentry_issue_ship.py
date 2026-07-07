@@ -145,6 +145,23 @@ def test_ship_fix_no_changes_raises(tmp_path: Path) -> None:
     assert exc.value.kind == ERR_NO_CHANGES
 
 
+def test_ship_fix_fails_clearly_when_base_branch_unresolved(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    (work / "app").mkdir()
+    (work / "app" / "handlers.py").write_text("x = 1\n")
+
+    # Base branch can't be resolved (offline + no origin/HEAD) -> fail, don't guess.
+    with (
+        patch("tools.cross_vendor.fix_sentry_issue.ship.default_branch", return_value=""),
+        pytest.raises(FixIssueError) as exc,
+    ):
+        ship_fix(str(work), issue_id="12345", sentry_url=_URL, result=_success_result())
+
+    assert exc.value.kind == ERR_PR_FAILED
+    assert exc.value.branch_name is None  # nothing was created
+    assert current_branch(str(work)) == "main"  # still on base, no fix branch
+
+
 def test_ship_fix_full_roundtrip(tmp_path: Path) -> None:
     work = _init_repo(tmp_path)
     (work / "app").mkdir()

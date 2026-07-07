@@ -150,24 +150,23 @@ def _remote_default_branch(workspace: str, token: str | None) -> str:
 
 
 def default_branch(workspace: str, *, token: str | None = None) -> str:
-    """Resolve the repo's default branch (the usual PR base).
+    """Resolve the repo's default branch (the usual PR base), or "" if unknown.
 
     Prefers the local ``origin/HEAD`` pointer; if it isn't configured (common on
-    fresh clones), asks the remote directly so callers don't silently target the
-    current feature branch. Falls back to the current branch only when the remote
-    is unreachable.
+    fresh clones), asks the remote directly. Returns "" when neither is available
+    (e.g. offline) rather than guessing the current branch — callers must decide
+    what to do so a PR never silently targets the wrong base.
     """
     result = _run_git(workspace, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().removeprefix("origin/")
-    remote = _remote_default_branch(workspace, token)
-    return remote or current_branch(workspace)
+    return _remote_default_branch(workspace, token)
 
 
 def short_head(workspace: str) -> str:
-    """Short SHA of HEAD (handy for making branch names unique)."""
+    """Short SHA of HEAD, or "" if it can't be resolved (e.g. an unborn HEAD)."""
     result = _run_git(workspace, "rev-parse", "--short", "HEAD")
-    return result.stdout.strip()
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def changed_paths(workspace: str) -> list[str]:

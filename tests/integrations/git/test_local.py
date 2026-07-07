@@ -214,6 +214,16 @@ def test_default_branch_falls_back_to_remote_head(tmp_path: Path) -> None:
     assert gitlocal.default_branch(str(work)) == "main"
 
 
+def test_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    # No local origin/HEAD and an unreachable remote -> cannot resolve.
+    _git(work, "remote", "set-head", "origin", "--delete")
+    _git(work, "remote", "set-url", "origin", str(tmp_path / "does-not-exist.git"))
+    _git(work, "checkout", "-b", "feature-x")
+    # Returns "" rather than guessing the current feature branch.
+    assert gitlocal.default_branch(str(work)) == ""
+
+
 def _fake_run_git_factory(captured: dict[str, Any], origin_url: str):
     def _fake(_ws: str, *args: str, env: Any = None, timeout: Any = None) -> Any:
         if args[:2] == ("remote", "get-url"):
