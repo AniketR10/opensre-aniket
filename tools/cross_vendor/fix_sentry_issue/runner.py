@@ -1,8 +1,8 @@
 """Lifecycle/orchestration for the Sentry issue-fix tool.
 
-Thin free functions the tool's ``run`` drives: opt-in gates (fix + ship), Pi CLI
-readiness, the Pi coding run (reusing ``integrations/pi``), the optional ship step
-(delegated to ``ship.py``), and result shaping.
+Thin free functions the tool's ``run`` drives: opt-in gates (fix + ship), coding-agent
+readiness, the coding run (via the agent-neutral ``integrations/coding_agent`` seam),
+the optional ship step (delegated to ``ship.py``), and result shaping.
 """
 
 from __future__ import annotations
@@ -11,6 +11,14 @@ import os
 from collections.abc import Mapping
 from typing import Any, Final
 
+from integrations.coding_agent import (
+    CodingResult,
+    coding_model,
+    coding_timeout_seconds,
+    coding_workspace,
+    run_coding_task,
+    verify_coding_agent,
+)
 from integrations.git import (
     GitCommandError,
     changed_paths,
@@ -19,14 +27,6 @@ from integrations.git import (
     is_git_repo,
 )
 from integrations.github.client import resolve_github_token
-from integrations.pi import (
-    PiCodingResult,
-    pi_coding_model,
-    pi_coding_timeout_seconds,
-    pi_coding_workspace,
-    run_pi_coding_task,
-    verify_pi_coding,
-)
 from tools.cross_vendor.fix_sentry_issue.context import IssueContext
 from tools.cross_vendor.fix_sentry_issue.errors import (
     ERR_CLI_UNAVAILABLE,
@@ -41,7 +41,6 @@ from tools.cross_vendor.fix_sentry_issue.ship import ShipResult, ship_fix
 
 SOURCE: Final = "sentry"
 _TRUTHY = {"1", "true", "yes", "on"}
-_INSTALL_HINT = "npm i -g @earendil-works/pi-coding-agent"
 
 
 def is_issue_fix_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -55,29 +54,27 @@ def ensure_enabled() -> None:
         raise FixIssueError(
             ERR_DISABLED,
             "Sentry issue-fix tool is disabled. Set PI_ISSUE_FIX_ENABLED=1 "
-            "(plus Sentry config and the Pi CLI) to enable it.",
+            "(plus Sentry config and a coding agent) to enable it.",
         )
 
 
 def ensure_cli_ready() -> None:
-    available, detail = verify_pi_coding()
+    available, detail = verify_coding_agent()
     if not available:
-        raise FixIssueError(
-            ERR_CLI_UNAVAILABLE, f"Pi CLI is not ready: {detail}. Install with: {_INSTALL_HINT}"
-        )
+        raise FixIssueError(ERR_CLI_UNAVAILABLE, f"Coding agent is not ready: {detail}")
 
 
 def resolve_workspace(workspace: str | None) -> str:
     """Resolve the workspace once so the fix and the ship step operate on the same tree."""
-    return workspace or pi_coding_workspace()
+    return workspace or coding_workspace()
 
 
-def run_fix(ctx: IssueContext, workspace: str, model: str | None) -> PiCodingResult:
-    return run_pi_coding_task(
+def run_fix(ctx: IssueContext, workspace: str, model: str | None) -> CodingResult:
+    return run_coding_task(
         ctx.task,
         workspace=workspace,
-        model=model or pi_coding_model(),
-        timeout_sec=pi_coding_timeout_seconds(),
+        model=model or coding_model(),
+        timeout_sec=coding_timeout_seconds(),
     )
 
 
@@ -125,7 +122,7 @@ def pre_pi_changes(workspace: str) -> dict[str, str]:
 def run_ship(
     issue_id: str,
     sentry_url: str,
-    result: PiCodingResult,
+    result: CodingResult,
     workspace: str,
     baseline: Mapping[str, str] | None = None,
 ) -> ShipResult:
@@ -156,7 +153,7 @@ def _base_output(issue_id: str) -> dict[str, Any]:
     }
 
 
-def to_output(issue_id: str, result: PiCodingResult) -> dict[str, Any]:
+def to_output(issue_id: str, result: CodingResult) -> dict[str, Any]:
     error_kind: str | None = None
     if not result.success:
         error_kind = ERR_TIMEOUT if result.timed_out else ERR_EXECUTION

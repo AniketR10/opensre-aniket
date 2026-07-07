@@ -14,10 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from integrations.coding_agent import CodingResult
 from integrations.git import changed_paths, current_branch, file_fingerprints
 from integrations.git.errors import COMMIT_FAILED, PUSH_FAILED, GitCommandError
 from integrations.github.client import GitHubApiError
-from integrations.pi import PiCodingResult
 from tools.cross_vendor.fix_sentry_issue import fix_sentry_issue
 from tools.cross_vendor.fix_sentry_issue.context import IssueContext
 from tools.cross_vendor.fix_sentry_issue.errors import (
@@ -57,8 +57,8 @@ def _init_repo(tmp_path: Path) -> Path:
     return work
 
 
-def _success_result() -> PiCodingResult:
-    return PiCodingResult(
+def _success_result() -> CodingResult:
+    return CodingResult(
         success=True,
         summary="Guard the None case in process_event.",
         changed_files=["app/handlers.py"],
@@ -235,7 +235,7 @@ def test_ship_fix_commits_only_pi_files_not_unrelated_wip(tmp_path: Path) -> Non
     (work / "app").mkdir()
     (work / "app" / "handlers.py").write_text("x = 1\n")
 
-    result = PiCodingResult(
+    result = CodingResult(
         success=True, summary="s", changed_files=["app/handlers.py"], diff="", returncode=0
     )
     with patch(
@@ -272,7 +272,7 @@ def test_ship_fix_includes_pi_edit_to_already_dirty_file(tmp_path: Path) -> None
     # file was already dirty.
     (work / "README.md").write_text("dev wip + pi fix\n")
 
-    result = PiCodingResult(
+    result = CodingResult(
         success=True, summary="s", changed_files=["README.md"], diff="", returncode=0
     )
     with patch(

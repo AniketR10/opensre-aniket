@@ -1,29 +1,30 @@
-"""Sentry issue-fix tool: paste a Sentry issue URL and Pi proposes (and optionally ships) the fix.
+"""Sentry issue-fix tool: paste a Sentry issue URL and a coding agent proposes (and optionally ships) the fix.
 
-Resolve the issue from Sentry, run the Pi coding agent in the **current workspace**,
-and return a summary + git diff for review. When ``open_pr`` is requested (and the
-ship gate is enabled), it then commits the fix to a fresh namespaced branch, pushes
-it, and opens a GitHub pull request into the base branch. It **never** pushes to the
+Resolve the issue from Sentry, run the configured coding agent (via the neutral
+``integrations/coding_agent`` seam; Pi today) in the **current workspace**, and
+return a summary + git diff for review. When ``open_pr`` is requested (and the ship
+gate is enabled), it then commits the fix to a fresh namespaced branch, pushes it,
+and opens a GitHub pull request into the base branch. It **never** pushes to the
 base/``main`` branch — the fix always lands on an ``opensre/sentry-fix-*`` branch and
 is proposed via PR.
 
-Package layout (separation of concerns, like ``tools/pi_coding_tool``):
+Package layout (separation of concerns):
 
 - ``errors.py``    — :class:`FixIssueError` + stable ``error_kind`` constants.
 - ``context.py``   — Sentry URL parse + issue fetch, compacted into a masked task.
-- ``runner.py``    — opt-in gates, Pi CLI readiness, the Pi run, ship orchestration,
-  and result shaping.
-- ``git_ops.py``   — safe subprocess git wrapper (branch/commit/push, protected-branch guards).
+- ``runner.py``    — opt-in gates, coding-agent readiness, the coding run, ship
+  orchestration, and result shaping.
 - ``pr.py``        — open the GitHub pull request via ``integrations/github``.
-- ``ship.py``      — sequence branch -> commit -> push -> PR into a :class:`ShipResult`.
+- ``ship.py``      — sequence branch -> commit -> push -> PR into a :class:`ShipResult`
+  (git primitives live in ``integrations/git``).
 - ``__init__.py``  — this file: the agent-facing :class:`BaseTool` contract. The
   class lives here because the tool registry discovers instances by
   ``__class__.__module__`` and does not recurse into sub-modules.
 
 Gating: ``is_available`` is True only when ``PI_ISSUE_FIX_ENABLED`` is set (the fix
 capability). Opening a PR requires a **second** opt-in, ``PI_ISSUE_FIX_SHIP_ENABLED``,
-plus a GitHub token. Secrets (Sentry/GitHub tokens) never enter the Pi prompt, the
-commit, the PR body, or the returned output — the issue context is masked.
+plus a GitHub token. Secrets (Sentry/GitHub tokens) never enter the coding-agent
+prompt, the commit, the PR body, or the returned output — the issue context is masked.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from tools.cross_vendor.fix_sentry_issue.runner import (
 
 
 class FixSentryIssueTool(BaseTool):
-    """Resolve a Sentry issue and have Pi propose a fix (diff for review)."""
+    """Resolve a Sentry issue and have a coding agent propose a fix (diff for review)."""
 
     name = "fix_sentry_issue"
     display_name = "Fix Sentry issue"
@@ -60,15 +61,15 @@ class FixSentryIssueTool(BaseTool):
     surfaces = ("investigation",)
     requires_approval = True
     approval_reason = (
-        "Runs the Pi coding agent to edit files based on a Sentry issue, and can open a PR."
+        "Runs a coding agent to edit files based on a Sentry issue, and can open a PR."
     )
     description = (
-        "Given a Sentry issue URL, fetch the issue context and run the Pi coding agent "
-        "(pi.dev) to propose a fix in the current repository, returning a summary plus the "
-        "git diff. With open_pr=true (and PI_ISSUE_FIX_SHIP_ENABLED=1 plus a GitHub token) "
-        "it commits the fix to a fresh branch, pushes it, and opens a pull request into the "
-        "base branch — never pushing to main. Disabled unless PI_ISSUE_FIX_ENABLED=1, Sentry "
-        "is configured, and the Pi CLI is installed."
+        "Given a Sentry issue URL, fetch the issue context and run a coding agent to "
+        "propose a fix in the current repository, returning a summary plus the git diff. "
+        "With open_pr=true (and PI_ISSUE_FIX_SHIP_ENABLED=1 plus a GitHub token) it commits "
+        "the fix to a fresh branch, pushes it, and opens a pull request into the base branch "
+        "— never pushing to main. Disabled unless PI_ISSUE_FIX_ENABLED=1, Sentry is "
+        "configured, and a coding agent is installed."
     )
     use_cases = [
         "A user pastes a Sentry issue link and asks OpenSRE to fix it",
@@ -96,7 +97,8 @@ class FixSentryIssueTool(BaseTool):
             },
             "model": {
                 "type": "string",
-                "description": "Optional Pi model override (provider/model). Defaults to PI_CODING_MODEL.",
+                "description": "Optional coding-agent model override (provider/model). "
+                "Defaults to CODING_MODEL / PI_CODING_MODEL.",
                 "nullable": True,
             },
             "open_pr": {
@@ -112,13 +114,13 @@ class FixSentryIssueTool(BaseTool):
         "required": ["sentry_url"],
     }
     outputs = {
-        "success": "True when Pi produced a fix (and, if open_pr, the PR opened) cleanly",
+        "success": "True when the coding agent produced a fix (and, if open_pr, the PR opened) cleanly",
         "error_kind": "Stable failure category (disabled, invalid_input, sentry_unavailable, "
         "issue_not_found, cli_unavailable, timeout, execution_error, ship_disabled, "
         "github_token_missing, not_a_git_repo, no_changes, protected_branch, branch_failed, "
         "commit_failed, push_failed, pr_failed) or None on success",
         "issue_id": "The resolved Sentry issue id",
-        "summary": "Pi's summary of the fix",
+        "summary": "the coding agent's summary of the fix",
         "changed_files": "Files modified in the working tree",
         "diff": "git diff of the proposed fix (truncated if large)",
         "branch_name": "Branch the fix was committed to (when open_pr), else None",

@@ -98,7 +98,7 @@ def run_sentry_fix(*, sentry_url: str, context: Any, open_pr: bool = False) -> d
 fix_sentry_issue_start_tool = RegisteredTool(
     name="fix_sentry_issue_start",
     description=(
-        "Fix a Sentry issue in code with the Pi coding agent, given a Sentry issue URL. "
+        "Fix a Sentry issue in code with a coding agent, given a Sentry issue URL. "
         "Use whenever the user asks to FIX, patch, resolve in code, or open/raise a pull "
         "request for a Sentry issue and provides a Sentry issue URL — e.g. 'fix this sentry "
         "issue <url>' or 'fix <url> and open a PR'. Set open_pr=true when they ask to "
