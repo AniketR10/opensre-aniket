@@ -237,6 +237,69 @@ def test_ship_fix_tags_branch_on_commit_failure(tmp_path: Path) -> None:
     assert current_branch(str(work)) == exc.value.branch_name
 
 
+def test_ship_fix_retries_cleanly_after_commit_failure(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    (work / "app").mkdir()
+    (work / "app" / "handlers.py").write_text("x = 1\n")
+
+    with (
+        patch(
+            "tools.cross_vendor.fix_sentry_issue.ship.commit_paths",
+            side_effect=GitCommandError(COMMIT_FAILED, "git commit failed"),
+        ),
+        pytest.raises(FixIssueError) as exc,
+    ):
+        ship_fix(str(work), issue_id="12345", sentry_url=_URL, result=_success_result())
+    branch = exc.value.branch_name
+
+    # Retry with nothing else changed: HEAD hasn't moved (the failed commit never
+    # landed), so the branch name resolves identically. It must resume on the
+    # branch it's already sitting on rather than fail with "branch already exists".
+    with patch(
+        "tools.cross_vendor.fix_sentry_issue.ship.open_pull_request",
+        return_value=PullRequest(url="https://github.com/acme/app/pull/9", number=9),
+    ):
+        ship = ship_fix(str(work), issue_id="12345", sentry_url=_URL, result=_success_result())
+
+    assert ship.branch_name == branch
+    assert current_branch(str(work)) == branch
+
+
+def test_ship_fix_branches_off_base_not_workspaces_current_branch(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    # The operator has some other local branch checked out, with a commit that
+    # never made it into origin/main.
+    _git(work, "checkout", "-b", "unrelated-feature")
+    (work / "unrelated.txt").write_text("not part of the fix\n")
+    _git(work, "add", "unrelated.txt")
+    _git(work, "commit", "-m", "unrelated work in progress")
+
+    # Pi's fix, left uncommitted while the workspace is still on that foreign branch.
+    (work / "app").mkdir()
+    (work / "app" / "handlers.py").write_text("x = 1\n")
+
+    with patch(
+        "tools.cross_vendor.fix_sentry_issue.ship.open_pull_request",
+        return_value=PullRequest(url="https://github.com/acme/app/pull/9", number=9),
+    ):
+        ship = ship_fix(str(work), issue_id="12345", sentry_url=_URL, result=_success_result())
+
+    # The fix branch must contain only the fix commit on top of main -- never the
+    # unrelated commit from whatever branch the workspace happened to be on.
+    commits_ahead_of_base = (
+        subprocess.run(
+            ["git", "log", "--oneline", f"main..{ship.branch_name}"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .splitlines()
+    )
+    assert len(commits_ahead_of_base) == 1
+    assert "unrelated" not in commits_ahead_of_base[0]
+
+
 def _baseline(work: Path) -> dict[str, str]:
     return file_fingerprints(str(work), changed_paths(str(work)))
 

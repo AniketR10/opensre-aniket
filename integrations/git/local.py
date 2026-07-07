@@ -245,6 +245,20 @@ def create_branch(workspace: str, branch: str, *, base_default: str = "") -> Non
         )
 
 
+def checkout_branch(workspace: str, branch: str) -> None:
+    """Switch to an already-existing local *branch* (does not create one).
+
+    Used to put the workspace on a known branch (typically the resolved base)
+    before creating a new branch off it, so the new branch's parent is never
+    whatever unrelated branch the workspace happened to have checked out.
+    """
+    result = _run_git(workspace, "checkout", branch)
+    if result.returncode != 0:
+        raise GitCommandError(
+            BRANCH_FAILED, f"Could not check out branch '{branch}': {result.stderr.strip()}"
+        )
+
+
 def commit_paths(workspace: str, paths: Sequence[str], message: str) -> None:
     """Stage and commit *only* the given paths, excluding any other WIP in the tree.
 

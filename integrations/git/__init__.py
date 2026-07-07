@@ -19,6 +19,7 @@ from integrations.git.errors import (
 from integrations.git.local import (
     assert_not_protected,
     changed_paths,
+    checkout_branch,
     commit_paths,
     create_branch,
     current_branch,
@@ -40,6 +41,7 @@ __all__ = [
     "GitCommandError",
     "assert_not_protected",
     "changed_paths",
+    "checkout_branch",
     "commit_paths",
     "create_branch",
     "current_branch",

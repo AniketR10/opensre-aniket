@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from integrations.git import local as gitlocal
-from integrations.git.errors import NOT_A_GIT_REPO, PROTECTED_BRANCH, GitCommandError
+from integrations.git.errors import BRANCH_FAILED, NOT_A_GIT_REPO, PROTECTED_BRANCH, GitCommandError
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -131,6 +131,22 @@ def test_create_branch_refuses_protected(tmp_path: Path) -> None:
         gitlocal.create_branch(str(work), "main", base_default="main")
     assert exc.value.kind == PROTECTED_BRANCH
     assert gitlocal.current_branch(str(work)) == "main"  # still on base
+
+
+def test_checkout_branch_switches_to_existing_branch(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    gitlocal.create_branch(str(work), "feature-a", base_default="main")
+    gitlocal.checkout_branch(str(work), "main")
+    assert gitlocal.current_branch(str(work)) == "main"
+    gitlocal.checkout_branch(str(work), "feature-a")
+    assert gitlocal.current_branch(str(work)) == "feature-a"
+
+
+def test_checkout_branch_raises_for_missing_branch(tmp_path: Path) -> None:
+    work = _init_repo(tmp_path)
+    with pytest.raises(GitCommandError) as exc:
+        gitlocal.checkout_branch(str(work), "does-not-exist")
+    assert exc.value.kind == BRANCH_FAILED
 
 
 def test_branch_commit_push_roundtrip(tmp_path: Path) -> None:

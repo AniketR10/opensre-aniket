@@ -20,8 +20,10 @@ from integrations.coding_agent import CodingResult
 from integrations.git import (
     GitCommandError,
     changed_paths,
+    checkout_branch,
     commit_paths,
     create_branch,
+    current_branch,
     default_branch,
     ensure_git_repo,
     file_fingerprints,
@@ -147,7 +149,13 @@ def ship_fix(
                 "Run `git remote set-head origin -a` in the workspace, or check connectivity.",
             )
         branch = build_branch_name(workspace, issue_id)
-        create_branch(workspace, branch, base_default=base)
+        # Branch off the resolved base, never off whatever the workspace happens to
+        # have checked out (e.g. an unrelated local feature branch) — unless a prior
+        # attempt already left us on this exact fix branch (retry after a partial
+        # failure below), in which case re-branching would just fail as "exists".
+        if current_branch(workspace) != branch:
+            checkout_branch(workspace, base)
+            create_branch(workspace, branch, base_default=base)
     except GitCommandError as exc:
         raise FixIssueError(exc.kind, exc.message) from exc
 
