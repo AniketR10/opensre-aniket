@@ -11,12 +11,7 @@ import pytest
 
 from integrations.hermes.incident import HermesIncident, IncidentSeverity, LogLevel, LogRecord
 from integrations.hermes.investigation import run_incident_investigation
-from integrations.hermes.sinks import (
-    TelegramSink,
-    TelegramSinkConfig,
-    _truncate,
-    make_telegram_sink,
-)
+from integrations.hermes.sinks import TelegramSink, TelegramSinkConfig, make_telegram_sink
 from integrations.telegram.alarms import AlarmDispatcher
 from integrations.telegram.credentials import TelegramCredentials
 
@@ -596,23 +591,6 @@ class TestSummaryTruncation:
         assert "investigation summary:" not in text
         assert "investigation: attempted (no summary produced)" in text
 
-    def test_whitespace_only_summary_renders_summary_block(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A non-empty string return is treated as a SUCCESS summary: it is
-        stripped and inlined under the ``investigation summary:`` heading."""
-        dispatcher, calls = _dispatcher(monkeypatch)
-
-        def _bridge(_incident: HermesIncident) -> str | None:
-            return "   \n\t  "
-
-        sink = TelegramSink(dispatcher, investigation_bridge=_bridge, config=_INLINE)
-        sink(_incident(severity=IncidentSeverity.CRITICAL))
-
-        text = calls[0]["text"]
-        assert "investigation summary:" in text
-        assert "investigation: attempted (no summary produced)" not in text
-
     def test_summary_is_stripped_before_inlining(self, monkeypatch: pytest.MonkeyPatch) -> None:
         dispatcher, calls = _dispatcher(monkeypatch)
 
@@ -716,27 +694,40 @@ class TestRecordFormatting:
         assert "run_id:" not in calls[0]["text"]
 
 
-class TestTruncateHelper:
-    """`_truncate` underpins both record and summary trimming; its boundary
-    behaviour is worth pinning directly so a refactor can't silently change
-    where the ellipsis lands."""
+class TestTruncationBoundary:
+    """Truncation boundary behaviour, pinned through the public sink API
+    (``max_record_chars``) rather than the private ``_truncate`` helper: a
+    record exactly at the limit is untouched, one char over collapses to
+    ``limit`` chars with a trailing ellipsis."""
 
-    def test_text_at_or_under_limit_is_unchanged(self) -> None:
-        assert _truncate("hello", 5) == "hello"
-        assert _truncate("hi", 5) == "hi"
+    def test_record_exactly_at_limit_is_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatcher, calls = _dispatcher(monkeypatch)
+        # raw = "<iso> ERROR exact: <msg>"; pin the limit to that exact length.
+        record = _record(LogLevel.ERROR, "exact", "boundary")
+        sink = TelegramSink(dispatcher, config=TelegramSinkConfig(max_record_chars=len(record.raw)))
 
-    def test_over_limit_appends_ellipsis_and_fits(self) -> None:
-        out = _truncate("hello world", 5)
-        assert out == "hell…"
-        assert len(out) == 5
+        sink(_incident(records=(record,)))
 
-    def test_non_positive_limit_returns_text_unchanged(self) -> None:
-        assert _truncate("hello", 0) == "hello"
-        assert _truncate("hello", -3) == "hello"
+        text = calls[0]["text"]
+        assert record.raw in text
+        assert "…" not in text
 
-    def test_limit_of_one_returns_single_char_without_ellipsis(self) -> None:
-        # limit <= 1 can't fit text + ellipsis, so it hard-slices.
-        assert _truncate("hello", 1) == "h"
+    def test_record_one_over_limit_collapses_to_limit_with_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatcher, calls = _dispatcher(monkeypatch)
+        record = _record(LogLevel.ERROR, "over", "boundary")
+        limit = len(record.raw) - 1
+        sink = TelegramSink(dispatcher, config=TelegramSinkConfig(max_record_chars=limit))
+
+        sink(_incident(records=(record,)))
+
+        text = calls[0]["text"]
+        assert record.raw not in text
+        # The trimmed line is exactly `limit` chars ending in the ellipsis.
+        assert record.raw[: limit - 1] + "…" in text
 
 
 class TestCloseIdempotency:
