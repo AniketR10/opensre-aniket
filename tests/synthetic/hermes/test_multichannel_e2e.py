@@ -193,6 +193,33 @@ class TestMultiChannelDedup:
         assert snap["delivered"] == 1
         assert snap["suppressed"] == 1
 
+    def test_telegram_cooldown_suppresses_after_correlator_lets_both_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pipeline has two independent suppression layers. With correlator
+        dedup disabled, both incidents are *delivered* to the Telegram sink, but
+        the AlarmDispatcher's per-fingerprint cooldown collapses them into a
+        single wire call — proving the second layer works on its own."""
+        channels = _mock_channels(monkeypatch)
+        agent, sink = _build_pipeline(
+            correlator=IncidentCorrelator(dedup_window_s=0.0),
+            telegram_cooldown_s=300.0,
+        )
+
+        agent.process(
+            [
+                "2026-05-12 00:00:00,000 ERROR backend.api: database connection refused",
+                "2026-05-12 00:00:30,000 ERROR backend.api: database connection refused",
+            ]
+        )
+
+        # Correlator suppressed nothing: both reached the sink.
+        snap = sink.metrics_snapshot()
+        assert snap["delivered"] == 2
+        assert snap["suppressed"] == 0
+        # …but the dispatcher cooldown let only the first one onto the wire.
+        assert channels.counts == (1, 0, 0)
+
 
 class TestMultiChannelEscalation:
     def test_repeated_warning_burst_escalates_and_switches_channel(
