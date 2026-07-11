@@ -8,13 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from integrations.pi import PiCodingResult
+from integrations.coding_agent import CodingResult
 from tools.pi_coding_tool import PiCodingTool, pi_coding_task
 from tools.pi_coding_tool.errors import PiCodingError
 from tools.pi_coding_tool.validation import validate_model, validate_task, validate_workspace
 
-_VERIFY = "tools.pi_coding_tool.runner.verify_pi_coding"
-_RUN = "tools.pi_coding_tool.runner.run_pi_coding_task"
+_VERIFY = "tools.pi_coding_tool.runner.verify_coding_agent"
+_RUN = "tools.pi_coding_tool.runner.run_coding_task"
 
 
 # --------------------------------------------------------------------------- #
@@ -65,7 +65,7 @@ def test_validate_model() -> None:
     with pytest.raises(PiCodingError) as bad:
         validate_model("bad model")
     assert bad.value.kind == "invalid_input"
-    with patch.dict(os.environ, {"PI_CODING_MODEL": ""}, clear=False):
+    with patch.dict(os.environ, {"CODING_MODEL": "", "PI_CODING_MODEL": ""}, clear=False):
         assert validate_model("") is None
 
 
@@ -98,7 +98,7 @@ def test_run_cli_unavailable(_mock_verify: MagicMock, tmp_path: Path) -> None:
 @patch(_RUN)
 @patch(_VERIFY, return_value=(True, "ok"))
 def test_run_success(_mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Path) -> None:
-    mock_run.return_value = PiCodingResult(
+    mock_run.return_value = CodingResult(
         success=True,
         summary="edited foo.py",
         changed_files=["foo.py"],
@@ -121,14 +121,14 @@ def test_run_success(_mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Pat
 @patch(_RUN)
 @patch(_VERIFY, return_value=(True, "ok"))
 def test_run_error_kinds(_mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Path) -> None:
-    mock_run.return_value = PiCodingResult(
+    mock_run.return_value = CodingResult(
         success=False, summary="", error="pi timed out", timed_out=True
     )
     with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
         out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
     assert out["error_kind"] == "timeout"
 
-    mock_run.return_value = PiCodingResult(success=False, summary="", error="model not found")
+    mock_run.return_value = CodingResult(success=False, summary="", error="model not found")
     with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
         out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
     assert out["error_kind"] == "execution_error"
@@ -143,6 +143,63 @@ def test_run_unexpected_exception_returns_error_dict(
     with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
         out = pi_coding_task(task="fix it", workspace=str(tmp_path))
     assert "error" in out
+
+
+# --------------------------------------------------------------------------- #
+# stable output shape — every path returns the same keys
+# --------------------------------------------------------------------------- #
+_RESULT_KEYS = {
+    "source",
+    "success",
+    "error_kind",
+    "summary",
+    "changed_files",
+    "diff",
+    "diff_truncated",
+    "returncode",
+    "timed_out",
+    "error",
+}
+
+
+@patch(_RUN)
+@patch(_VERIFY, return_value=(True, "ok"))
+def test_success_output_has_full_key_set(
+    _mock_verify: MagicMock, mock_run: MagicMock, tmp_path: Path
+) -> None:
+    mock_run.return_value = CodingResult(success=True, summary="done", changed_files=["a.py"])
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        out = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
+    assert set(out) == _RESULT_KEYS
+
+
+def test_early_gate_failures_still_have_full_key_set(tmp_path: Path) -> None:
+    """A gate failure short-circuits before the coding run, but callers must still be
+    able to read ``diff`` / ``changed_files`` without a KeyError."""
+    # disabled
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("PI_CODING_ENABLED", None)
+        disabled = pi_coding_task.run(task="do something")
+
+    # invalid input
+    with patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False):
+        invalid = pi_coding_task.run(task="   ")
+
+    # cli unavailable
+    with (
+        patch.dict(os.environ, {"PI_CODING_ENABLED": "1"}, clear=False),
+        patch(_VERIFY, return_value=(False, "not installed")),
+    ):
+        unavailable = pi_coding_task.run(task="fix it", workspace=str(tmp_path))
+
+    for out in (disabled, invalid, unavailable):
+        assert set(out) == _RESULT_KEYS
+        assert out["success"] is False
+        assert out["error_kind"]
+        # the keys that used to be missing entirely
+        assert out["changed_files"] == []
+        assert out["diff"] == ""
+        assert out["summary"] == ""
 
 
 # --------------------------------------------------------------------------- #

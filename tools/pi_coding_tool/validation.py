@@ -1,10 +1,10 @@
 """Input validation and request resolution for the Pi coding tool.
 
 Turns the loose tool arguments (``task`` / ``workspace`` / ``model``) into a
-validated, fully-resolved :class:`ResolvedRequest`, applying config defaults
-(``PI_CODING_WORKSPACE`` / ``PI_CODING_MODEL`` / ``PI_CODING_TIMEOUT_SECONDS``).
-Each validator raises :class:`PiCodingError` with ``kind="invalid_input"`` on a
-bad value.
+validated, fully-resolved :class:`ResolvedRequest`, applying the coding-agent config
+defaults (``CODING_WORKSPACE`` / ``CODING_MODEL`` / ``CODING_TIMEOUT_SECONDS``, with
+the legacy ``PI_CODING_*`` fallbacks). Each validator raises :class:`PiCodingError`
+with ``kind="invalid_input"`` on a bad value.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from integrations.pi import pi_coding_model, pi_coding_timeout_seconds, pi_coding_workspace
+from integrations.coding_agent import coding_model, coding_timeout_seconds, coding_workspace
 from tools.pi_coding_tool.errors import ERR_INVALID_INPUT, PiCodingError
 
 _MAX_TASK_CHARS = 4000
@@ -41,7 +41,7 @@ def validate_task(task: str | None) -> str:
 
 
 def validate_workspace(workspace: str | None) -> str:
-    resolved = (workspace or "").strip() or pi_coding_workspace()
+    resolved = (workspace or "").strip() or coding_workspace()
     path = Path(resolved).expanduser()
     if not path.exists():
         raise PiCodingError(ERR_INVALID_INPUT, f"workspace does not exist: {path}")
@@ -51,7 +51,7 @@ def validate_workspace(workspace: str | None) -> str:
 
 
 def validate_model(model: str | None) -> str | None:
-    resolved = (model or "").strip() or pi_coding_model()
+    resolved = (model or "").strip() or coding_model()
     if resolved is None:
         return None
     # Pi accepts "provider/model" and shorthands (e.g. "sonnet:high"); only reject
@@ -70,5 +70,5 @@ def resolve_request(task: str | None, workspace: str | None, model: str | None) 
         task=validate_task(task),
         workspace=validate_workspace(workspace),
         model=validate_model(model),
-        timeout_sec=pi_coding_timeout_seconds(),
+        timeout_sec=coding_timeout_seconds(),
     )

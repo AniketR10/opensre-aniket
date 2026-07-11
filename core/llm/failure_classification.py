@@ -32,9 +32,19 @@ _NETWORK_RE = re.compile(
 )
 _ERROR_KEYWORD_RE = re.compile(r"error|fail|exception|invalid", re.IGNORECASE)
 
+# Hints for a CLI that gave us nothing to go on. They lead with the *fact* (what the
+# process did) and offer causes as possibilities — a confidently wrong cause sends the
+# reader down the wrong path, which is worse than admitting we don't know.
 _SILENT_FAILURE_HINT = (
-    "no error detail from the CLI — most likely quota exhausted or expired auth; "
-    "check your plan/credits or re-login"
+    "no error detail from the CLI — common causes are an exhausted quota, expired auth, "
+    "or a dropped request; check your plan/credits and auth, then retry"
+)
+# Exit 0 with no output is a *different* fact: the CLI believes it succeeded. Quota and
+# auth failures usually exit non-zero, so leading with them here would mislead.
+_EMPTY_SUCCESS_HINT = (
+    "the CLI reported success but produced no output — the model may have returned an "
+    "empty completion, or the provider may have dropped the request silently; check your "
+    "plan/credits and auth, then retry"
 )
 
 
@@ -72,10 +82,15 @@ def classify_cli_failure_hint(stdout: str, stderr: str, returncode: int) -> str 
         return category
 
     combined = f"{stdout}\n{stderr}".strip()
-    if returncode not in (0, 130) and (
-        not combined or (len(combined) < 120 and not _ERROR_KEYWORD_RE.search(combined))
-    ):
-        return _SILENT_FAILURE_HINT
+    # Reaching here at all means the run failed: adapters call ``explain_failure`` for a
+    # non-zero exit *or* an exit-0 run whose output was unusable (empty). Exit 130 is the
+    # user pressing Ctrl+C — not a failure to explain.
+    if returncode == 130:
+        return None
+    if not combined or (len(combined) < 120 and not _ERROR_KEYWORD_RE.search(combined)):
+        # A silent exit-0 means the CLI *thinks* it succeeded, which points somewhere
+        # different from a silent crash — so say so rather than blaming quota for both.
+        return _EMPTY_SUCCESS_HINT if returncode == 0 else _SILENT_FAILURE_HINT
 
     return None
 

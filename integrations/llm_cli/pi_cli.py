@@ -2,9 +2,19 @@
 
 Pi (https://pi.dev, repo: earendil-works/pi) is an open-source, bring-your-own-key
 coding-agent CLI that runs the same agent loop against ~30 providers (Anthropic,
-OpenAI, Google Gemini, xAI, DeepSeek, …). OpenSRE uses it purely as a one-shot
-text responder inside the ReAct loop, so invocations run in headless ``-p`` print
+OpenAI, Google Gemini, xAI, DeepSeek, …). Invocations run in headless ``-p`` print
 mode (no TTY, no approval prompts).
+
+This adapter serves two roles, split by ``build(coding_mode=...)``:
+
+* **Answer role** (``coding_mode=False``, the default) — a one-shot text responder
+  inside the ReAct loop. Runs with ``--no-tools``: Pi's default toolset includes
+  write/edit/bash, and left enabled it will "answer" by *writing a file* into the
+  user's repository rather than printing to stdout, which surfaces as a silent
+  success (exit 0, empty stdout) and leaves a stray file behind.
+* **Coding role** (``coding_mode=True``, via the ``integrations/coding_agent`` seam)
+  — keeps the default tools, because editing the workspace is the point; the result
+  is captured as a reviewable git diff and is never committed or pushed.
 
 Env vars
 --------
@@ -55,6 +65,7 @@ from integrations.llm_cli.binary_resolver import (
 from integrations.llm_cli.binary_resolver import (
     resolve_cli_binary,
 )
+from integrations.llm_cli.coding_prompt import build_coding_prompt as _build_coding_prompt
 from integrations.llm_cli.constants import DEFAULT_EXEC_TIMEOUT_SEC
 from integrations.llm_cli.env_overrides import (
     PI_PROVIDER_ENV_KEYS,
@@ -155,6 +166,9 @@ class PiAdapter:
     auth_hint = _AUTH_HINT.removesuffix(".")
     min_version: str | None = None
     default_exec_timeout_sec = DEFAULT_EXEC_TIMEOUT_SEC
+    #: Pi's default toolset edits the working tree, so it can serve the coding role
+    #: (``coding_mode=True``). The answer role runs ``--no-tools`` — see ``build``.
+    supports_coding = True
 
     def _resolve_binary(self) -> str | None:
         return resolve_cli_binary(
@@ -202,6 +216,10 @@ class PiAdapter:
             )
         return self._probe_binary(binary)
 
+    def build_coding_prompt(self, task: str) -> str:
+        """Wrap the untrusted *task* in Pi's coding prompt (shared safety rules)."""
+        return _build_coding_prompt(task, agent_identity="the Pi coding agent")
+
     def build(
         self,
         *,
@@ -209,6 +227,7 @@ class PiAdapter:
         model: str | None,
         workspace: str,
         reasoning_effort: str | None = None,
+        coding_mode: bool = False,
     ) -> CLIInvocation:
         # Pi print mode has no reasoning-effort flag (thinking level is part of
         # the model string, e.g. ``sonnet:high``); accept the param for protocol
@@ -225,14 +244,22 @@ class PiAdapter:
 
         # ``pi -p PROMPT`` runs a single non-interactive turn (no TTY) and prints
         # the model's answer to stdout for parse(). Prompt is passed as an argv
-        # arg (the documented print-mode form). Pi keeps its default tools and
-        # context-file (AGENTS.md / CLAUDE.md) discovery enabled, matching the
-        # other default-agent CLI adapters (claude-code, opencode, gemini-cli).
+        # arg (the documented print-mode form).
         argv: list[str] = [
             binary,
             "-p",
             prompt,
         ]
+
+        # Pi is a *coding agent*: its default toolset includes write/edit/bash. In
+        # the answer role (the ReAct loop's one-shot text responder) those tools are
+        # not just unnecessary, they are harmful — Pi will happily "answer" by
+        # writing a file into the user's repo instead of printing to stdout, which
+        # surfaces as a silent success (exit 0, empty stdout) and leaves a stray
+        # file behind. Only the coding role, which exists to edit the workspace and
+        # captures the result as a reviewable git diff, gets tools.
+        if not coding_mode:
+            argv.append("--no-tools")
 
         resolved_model = (model or "").strip()
         if resolved_model:

@@ -24,7 +24,7 @@ mirroring how ``execute_python_code`` is gated by availability:
 Expected failures return a structured ``{"success": False, "error_kind": ...}`` dict;
 any *unexpected* exception propagates to ``BaseTool.__call__``, which reports it to
 Sentry. It edits the working tree and returns a summary + git diff; it never commits,
-pushes, or opens a PR (see ``integrations/pi``).
+pushes, or opens a PR (see ``integrations/coding_agent``).
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from __future__ import annotations
 from typing import Any
 
 from core.tool_framework.base import BaseTool
-from integrations.pi import is_pi_coding_enabled
 from tools.pi_coding_tool.errors import PiCodingError
 from tools.pi_coding_tool.runner import (
     SOURCE,
@@ -40,6 +39,7 @@ from tools.pi_coding_tool.runner import (
     ensure_enabled,
     error_output,
     execute,
+    is_pi_coding_enabled,
     to_output,
 )
 from tools.pi_coding_tool.validation import resolve_request
@@ -122,7 +122,7 @@ class PiCodingTool(BaseTool):
             return error_output(exc.kind, exc.message)
 
         # Expected execution failures (timeout, provider limit, no-op) come back as a
-        # populated PiCodingResult; any *unexpected* exception propagates to
+        # populated CodingResult; any *unexpected* exception propagates to
         # BaseTool.__call__, which reports it to Sentry (the global tool wrapper).
         return to_output(execute(request))
 

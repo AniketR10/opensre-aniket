@@ -25,7 +25,8 @@ SaaS backend (an `integrations/<vendor>/` package)?
 3. **Genuinely spans 2+ vendor integrations** → `tools/cross_vendor/`.
    The tool's logic itself correlates or orchestrates across multiple
    `integrations/<vendor>/` packages — e.g. `fix_sentry_issue` reads from
-   `integrations.sentry` and hands the fix to `integrations.pi`. This is
+   `integrations.sentry` and hands the fix to the coding-agent seam
+   (`integrations.coding_agent`). This is
    the narrow bucket; don't reach for it just because a tool happens to
    format its output for a second vendor (e.g. "Slack-ready" report text
    is still single-vendor logic, not cross-vendor).
@@ -50,7 +51,7 @@ Applied to the pre-existing top-level `tools/` packages:
 | `tools/system/python_execution_tool/` | system | Generic sandboxed Python execution; the GitHub token import is one of several optional credential sources, not the tool's purpose. |
 | `tools/system/sre_guidance_tool/` | system | Local knowledge-base retrieval; no vendor. |
 | `tools/system/watch_dog/` | system | CLI/REPL process monitoring; Telegram is only the alarm-delivery channel, not the tool's domain. |
-| `tools/cross_vendor/fix_sentry_issue/` | cross_vendor | Reads a Sentry issue and hands the fix to the Pi coding agent — two `integrations/` packages in one tool's logic. |
+| `tools/cross_vendor/fix_sentry_issue/` | cross_vendor | Reads a Sentry issue and hands the fix to the coding-agent seam — two `integrations/` packages in one tool's logic. |
 
 **Left as-is, not yet migrated** (single-vendor tools that predate the
 vendor-first tool layout and belong under `integrations/<vendor>/tools/`,
@@ -59,7 +60,8 @@ not `tools/system/` or `tools/cross_vendor/`):
 - `tools/community_followup_tool/`, `tools/git_deploy_timeline_tool/`,
   `tools/work_status_report_tool/` — GitHub-only.
 - `tools/slack_send_message_tool/` — Slack-only.
-- `tools/pi_coding_tool/` — Pi-only.
+- `tools/pi_coding_tool/` — routes through the coding-agent seam
+  (`integrations.coding_agent`, default Pi).
 
 Migrating these to `integrations/<vendor>/tools/` is in scope for T-18
 (full vendor-first completion), not this policy change — moving them into

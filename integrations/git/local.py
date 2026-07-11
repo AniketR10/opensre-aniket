@@ -17,6 +17,7 @@ import base64
 import os
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from integrations.git.errors import (
@@ -35,6 +36,9 @@ _GIT_TIMEOUT_SEC = 60
 _REMOTE_TIMEOUT_SEC = 15
 # Branch names we refuse to create or push to, on top of the resolved default.
 _PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "trunk"})
+# Bounds for capturing a reviewable working-tree diff (see ``worktree_diff``).
+_MAX_DIFF_CHARS = 20_000
+_MAX_UNTRACKED_FILES = 50
 
 
 def _run_git(
@@ -219,6 +223,75 @@ def file_fingerprints(workspace: str, paths: Sequence[str]) -> dict[str, str]:
         for path, digest in zip(existing, hashes):
             fingerprints[path] = digest.strip()
     return fingerprints
+
+
+@dataclass(frozen=True)
+class WorktreeDiff:
+    """Reviewable snapshot of working-tree changes vs HEAD.
+
+    ``changed_files`` lists every dirty path; ``diff`` is the unified diff of those
+    changes (tracked edits plus new files rendered as added content), truncated to a
+    sane size with ``truncated`` flagging when that happened.
+    """
+
+    changed_files: list[str]
+    diff: str
+    truncated: bool
+
+
+def _untracked_paths(workspace: str) -> list[str]:
+    """New (untracked) file paths, directories expanded to individual files.
+
+    Uses ``-z`` NUL separation so paths with spaces/quotes/non-ASCII bytes are
+    returned verbatim (matching :func:`changed_paths`).
+    """
+    result = _run_git(workspace, "status", "--porcelain", "-z", "--untracked-files=all")
+    paths: list[str] = []
+    for record in result.stdout.split("\0"):
+        # Porcelain marks untracked entries with a "?? " prefix.
+        if record.startswith("?? "):
+            path = record[3:]
+            if path:
+                paths.append(path)
+    return paths
+
+
+def _untracked_diff(workspace: str, *, max_files: int) -> str:
+    """Added-content diff for new files (``git diff HEAD`` omits untracked paths).
+
+    Each untracked file is rendered via ``git diff --no-index`` against
+    ``/dev/null``, which never touches the index. That command exits non-zero when
+    the files differ (always, here) — expected, so we keep whatever it wrote to
+    stdout.
+    """
+    chunks: list[str] = []
+    for path in _untracked_paths(workspace)[:max_files]:
+        result = _run_git(workspace, "diff", "--no-index", "--no-color", "--", os.devnull, path)
+        if result.stdout:
+            chunks.append(result.stdout)
+    return "".join(chunks)
+
+
+def worktree_diff(
+    workspace: str,
+    *,
+    max_chars: int = _MAX_DIFF_CHARS,
+    max_untracked_files: int = _MAX_UNTRACKED_FILES,
+) -> WorktreeDiff:
+    """Capture working-tree changes vs HEAD as a reviewable :class:`WorktreeDiff`.
+
+    Backend-agnostic: any coding agent that edits the tree can be reviewed through
+    this one path. The diff covers both tracked edits (``git diff HEAD``) and new
+    untracked files (added content), then is truncated to *max_chars*.
+    """
+    changed_files = changed_paths(workspace)
+    tracked = _run_git(workspace, "diff", "HEAD")
+    diff = (tracked.stdout or "") + _untracked_diff(workspace, max_files=max_untracked_files)
+    truncated = False
+    if len(diff) > max_chars:
+        diff = diff[:max_chars]
+        truncated = True
+    return WorktreeDiff(changed_files=changed_files, diff=diff, truncated=truncated)
 
 
 def assert_not_protected(branch: str, *, protected_extra: str = "") -> None:

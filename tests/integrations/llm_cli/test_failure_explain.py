@@ -25,9 +25,12 @@ def test_classify_quota_hint() -> None:
 
 
 def test_classify_silent_exit_hint() -> None:
+    """A silent crash (non-zero exit, no usable detail) names quota/auth as *possible*
+    causes — it must not assert one as fact, since a wrong cause misleads the reader."""
     hint = classify_cli_failure_hint("", "OpenAI Codex v0.134.0", 1)
     assert hint is not None
-    assert "quota exhausted" in hint
+    assert "no error detail" in hint  # leads with the fact
+    assert "quota" in hint and "auth" in hint  # offers the likely causes
 
 
 def test_explain_cli_failure_with_extra_messages() -> None:

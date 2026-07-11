@@ -62,3 +62,34 @@ class LLMCLIAdapter(Protocol):
     def explain_failure(self, *, stdout: str, stderr: str, returncode: int) -> str:
         """Human-readable failure when returncode != 0 or output is unusable."""
         pass
+
+
+@runtime_checkable
+class CodingCLIAdapter(LLMCLIAdapter, Protocol):
+    """An :class:`LLMCLIAdapter` that can also *edit a workspace* (coding mode).
+
+    Most CLI adapters answer questions read-only; a coding-capable one additionally
+    owns its agent prompt (:meth:`build_coding_prompt`) and, when built with
+    ``coding_mode=True``, produces an invocation that edits the working tree. The
+    coding runner resolves an adapter and only dispatches to it when it satisfies
+    this protocol *and* ``supports_coding`` is True.
+    """
+
+    #: True when this adapter can edit a workspace (not just answer read-only).
+    supports_coding: bool
+
+    def build_coding_prompt(self, task: str) -> str:
+        """Wrap the untrusted *task* in this agent's coding prompt (see coding_prompt)."""
+        pass
+
+    def build(
+        self,
+        *,
+        prompt: str,
+        model: str | None,
+        workspace: str,
+        reasoning_effort: str | None = None,
+        coding_mode: bool = False,
+    ) -> CLIInvocation:
+        """Build argv; when ``coding_mode`` is set, produce an edit-capable invocation."""
+        pass

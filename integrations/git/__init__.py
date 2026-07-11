@@ -17,6 +17,7 @@ from integrations.git.errors import (
     GitCommandError,
 )
 from integrations.git.local import (
+    WorktreeDiff,
     assert_not_protected,
     changed_paths,
     checkout_branch,
@@ -29,6 +30,7 @@ from integrations.git.local import (
     is_git_repo,
     push_branch,
     short_head,
+    worktree_diff,
 )
 
 __all__ = [
@@ -39,6 +41,7 @@ __all__ = [
     "PROTECTED_BRANCH",
     "PUSH_FAILED",
     "GitCommandError",
+    "WorktreeDiff",
     "assert_not_protected",
     "changed_paths",
     "checkout_branch",
@@ -51,4 +54,5 @@ __all__ = [
     "is_git_repo",
     "push_branch",
     "short_head",
+    "worktree_diff",
 ]

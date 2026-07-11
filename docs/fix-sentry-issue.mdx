@@ -26,9 +26,10 @@ token. Enable each deliberately.
 | `PI_ISSUE_FIX_SHIP_ENABLED` | Second opt-in required to open a PR (`open_pr`). Off by default. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token used to open the pull request (needs `repo`/`pull_request` write). |
 | `SENTRY_ORG_SLUG` / `SENTRY_AUTH_TOKEN` | Sentry org + token used to fetch the issue (`SENTRY_URL` for self-hosted). |
-| `PI_CODING_MODEL` | Pi model used for the fix (shared with the Pi coding tool). |
-| `PI_CODING_WORKSPACE` | Repository Pi edits. Defaults to the current directory. |
-| `PI_CODING_TIMEOUT_SECONDS` | Per-run timeout (default 600, clamped 60–1800). |
+| `CODING_AGENT` | Which coding backend implements the fix. Defaults to `pi` (the only one supported today). |
+| `CODING_MODEL` | Model used for the fix (shared with the coding tool). Falls back to `PI_CODING_MODEL`. |
+| `CODING_WORKSPACE` | Repository the agent edits. Defaults to the current directory. Falls back to `PI_CODING_WORKSPACE`. |
+| `CODING_TIMEOUT_SECONDS` | Per-run timeout (default 600, clamped 60–1800). Falls back to `PI_CODING_TIMEOUT_SECONDS`. |
 
 | Parameter | What it does |
 | --- | --- |
@@ -46,7 +47,7 @@ token. Enable each deliberately.
 2. Turn the tool on:
    ```bash
    export PI_ISSUE_FIX_ENABLED=1
-   export PI_CODING_MODEL=anthropic/claude-haiku-4-5   # optional
+   export CODING_MODEL=anthropic/claude-haiku-4-5   # optional
    ```
 3. (Optional) Let OpenSRE open the fix as a pull request:
    ```bash
