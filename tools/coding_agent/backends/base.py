@@ -69,7 +69,6 @@ class CodingBackend(Protocol):
 
     def detect(self) -> BackendProbe:
         """Whether the backend is installed and authenticated. Never raises."""
-        ...
 
     def run(
         self,
@@ -86,4 +85,3 @@ class CodingBackend(Protocol):
         ``error``. The backend owns its own agent prompt, so the tool layer never
         carries one.
         """
-        ...
