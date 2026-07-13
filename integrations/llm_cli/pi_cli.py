@@ -12,7 +12,7 @@ This adapter serves two roles, split by ``build(coding_mode=...)``:
   write/edit/bash, and left enabled it will "answer" by *writing a file* into the
   user's repository rather than printing to stdout, which surfaces as a silent
   success (exit 0, empty stdout) and leaves a stray file behind.
-* **Coding role** (``coding_mode=True``, via the ``integrations/coding_agent`` seam)
+* **Coding role** (``coding_mode=True``, via the ``tools/coding_agent`` seam)
   — keeps the default tools, because editing the workspace is the point; the result
   is captured as a reviewable git diff and is never committed or pushed.
 

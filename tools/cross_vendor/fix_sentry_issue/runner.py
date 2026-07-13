@@ -1,7 +1,7 @@
 """Lifecycle/orchestration for the Sentry issue-fix tool.
 
 Thin free functions the tool's ``run`` drives: opt-in gates (fix + ship), coding-agent
-readiness, the coding run (via the agent-neutral ``integrations/coding_agent`` seam),
+readiness, the coding run (via the agent-neutral ``tools/coding_agent`` seam),
 the optional ship step (delegated to ``ship.py``), and result shaping.
 """
 
@@ -11,14 +11,6 @@ import os
 from collections.abc import Mapping
 from typing import Any, Final
 
-from integrations.coding_agent import (
-    CodingResult,
-    coding_model,
-    coding_timeout_seconds,
-    coding_workspace,
-    run_coding_task,
-    verify_coding_agent,
-)
 from integrations.git import (
     GitCommandError,
     changed_paths,
@@ -27,6 +19,14 @@ from integrations.git import (
     is_git_repo,
 )
 from integrations.github.client import resolve_github_token
+from tools.coding_agent import (
+    CodingResult,
+    coding_model,
+    coding_timeout_seconds,
+    coding_workspace,
+    run_coding_task,
+    verify_coding_agent,
+)
 from tools.cross_vendor.fix_sentry_issue.context import IssueContext
 from tools.cross_vendor.fix_sentry_issue.errors import (
     ERR_CLI_UNAVAILABLE,

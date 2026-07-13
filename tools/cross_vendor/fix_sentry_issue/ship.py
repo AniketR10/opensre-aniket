@@ -16,7 +16,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from integrations.coding_agent import CodingResult
 from integrations.git import (
     GitCommandError,
     changed_paths,
@@ -31,6 +30,7 @@ from integrations.git import (
     short_head,
 )
 from integrations.github.client import resolve_github_token
+from tools.coding_agent import CodingResult
 from tools.cross_vendor.fix_sentry_issue.errors import ERR_NO_CHANGES, ERR_PR_FAILED, FixIssueError
 from tools.cross_vendor.fix_sentry_issue.pr import PullRequest, open_pull_request
 

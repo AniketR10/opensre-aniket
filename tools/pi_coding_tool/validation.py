@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from integrations.coding_agent import coding_model, coding_timeout_seconds, coding_workspace
+from tools.coding_agent import coding_model, coding_timeout_seconds, coding_workspace
 from tools.pi_coding_tool.errors import ERR_INVALID_INPUT, PiCodingError
 
 _MAX_TASK_CHARS = 4000

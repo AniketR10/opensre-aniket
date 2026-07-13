@@ -17,6 +17,8 @@ Use this package when adding a new **non-interactive** LLM that shells out to a 
 | `semver_utils.py`    | Shared semver helpers (`parse_semver_three_part`, `semver_to_tuple`). |
 | `binary_resolver.py` | Shared executable resolution helpers (`env -> PATH -> fallback paths`).                     |
 | `runner.py`          | `CLIBackedLLMClient`: guardrails, `detect()`, `subprocess.run`, ANSI strip, `LLMResponse`.  |
+| `polled_runner.py`   | `run_polled_process`: long-running exec with drained pipes (used by the coding path, where a blocking `subprocess.run` can dead-lock on a full pipe buffer). |
+| `coding_prompt.py`   | `build_coding_prompt` + `sanitize_untrusted_task` — the shared, un-weakenable safety rules wrapped around any coding task. |
 | `text.py`            | `flatten_messages_to_prompt` for stdin from chat-style payloads.                            |
 | `codex.py`           | Reference adapter: binary resolution, `codex exec`, `--version`, and opt-in-only `login status` probing. |
 | `opencode.py`        | Multi-provider CLI: `--version`, then `opencode auth list` (see `_parse_opencode_auth_list_output`). |
@@ -35,6 +37,28 @@ Use this package when adding a new **non-interactive** LLM that shells out to a 
 3. **Config** — Add the provider literal to `LLMProvider` and validators in `config/config.py` (same string as the registry key).
 4. **Wizard (optional)** — If onboarding should offer the CLI: add a `ProviderOption` in `surfaces/cli/wizard/config.py` with `credential_kind="cli"` and `adapter_factory`. `flow.py` already runs `_run_cli_llm_onboarding` for CLI providers and builds the saved-summary credential line from `provider.label` + `adapter.auth_hint`.
 5. **Typing** — Prefer `adapter_factory: Callable[[], LLMCLIAdapter]` on `ProviderOption` so wizard and client stay aligned.
+
+## Coding-capable adapters (optional)
+
+Most adapters only *answer*: they take a prompt and return text. An adapter that can also
+**edit a workspace** additionally implements `CodingCLIAdapter` (`base.py`):
+
+| Member | Role |
+| ------ | ---- |
+| `supports_coding: bool` | `True` opts the adapter into the coding path. Default `False` — an answer-only CLI needs no changes. |
+| `build_coding_prompt(task)` | Wraps the task in the shared safety rules (`coding_prompt.build_coding_prompt`) plus a one-line agent identity. The rules themselves are shared and must not be weakened per adapter. |
+| `build(..., coding_mode=False)` | `coding_mode=True` means "you may write files". The adapter is responsible for turning write tools **on** for coding and **off** otherwise — see `pi_cli.py`, which appends `--no-tools` when `coding_mode` is false so the answer role cannot touch the repo. |
+
+Orchestration of a coding run does **not** live here. `tools/coding_agent/` owns it and talks
+to a transport-agnostic `CodingBackend`; `tools/coding_agent/backends/cli.py` is the adapter
+that binds this package to that seam. So this package stays a *transport* concern (argv, env,
+subprocess), and coding policy (diff capture, success rules, provider-limit handling) stays in
+`tools/`. A future non-CLI coding agent (OpenClaw speaks MCP, not a CLI) plugs into
+`CodingBackend` without touching `integrations/llm_cli/` at all.
+
+Pi is the only coding-capable adapter today. The other CLIs are registered as answer-only and
+the coding runner rejects them with a clear "cannot edit a workspace" error rather than running
+them and silently producing no diff.
 
 ## Binary resolution (recommended pattern)
 

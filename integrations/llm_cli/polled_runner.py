@@ -1,14 +1,16 @@
-"""Polled subprocess execution for coding-agent runs.
+"""Polled subprocess execution for long-running CLI invocations.
 
-A coding agent is a long-running child that streams verbose output (tool calls,
-edits, progress). Unlike the brain-role ``CLIBackedLLMClient`` — a single blocking
-``subprocess.run`` — we spawn it, drain both pipes in background threads, and poll
-it to a deadline so a long task is bounded and the process is terminated gracefully
-(SIGTERM, then SIGKILL) on timeout.
+The sibling :mod:`~integrations.llm_cli.runner` drives a CLI for the *answer* role:
+one blocking ``subprocess.run``, short prompt, short reply. A CLI running an
+**agentic** task is a different animal — it runs for minutes and streams verbose
+output (tool calls, edits, progress) — so we spawn it, drain both pipes in
+background threads, and poll to a deadline, terminating it gracefully (SIGTERM,
+then SIGKILL) if it overruns.
 
-Backend-agnostic: it drives whatever :class:`CLIInvocation` an
-:class:`~integrations.llm_cli.base.LLMCLIAdapter` builds, so every coding backend
-shares one execution path.
+This is CLI transport machinery, which is why it lives here rather than in the
+coding orchestration: it drives whatever :class:`CLIInvocation` an
+:class:`~integrations.llm_cli.base.LLMCLIAdapter` builds and knows nothing about
+coding tasks.
 """
 
 from __future__ import annotations

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from integrations.coding_agent import coding_model, coding_timeout_seconds, coding_workspace
-from integrations.coding_agent.config import coding_agent_provider
+from tools.coding_agent import coding_model, coding_timeout_seconds, coding_workspace
+from tools.coding_agent.config import coding_agent_provider
 
 
 def test_provider_defaults_to_pi_and_normalizes() -> None:

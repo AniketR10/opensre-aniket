@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from integrations.coding_agent import CodingResult
 from integrations.sentry import SentryConfig
+from tools.coding_agent import CodingResult
 from tools.cross_vendor.fix_sentry_issue import FixSentryIssueTool, fix_sentry_issue
 from tools.cross_vendor.fix_sentry_issue.context import gather_issue_context
 

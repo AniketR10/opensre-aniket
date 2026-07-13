@@ -1,7 +1,7 @@
 """Sentry issue-fix tool: paste a Sentry issue URL and a coding agent proposes (and optionally ships) the fix.
 
 Resolve the issue from Sentry, run the configured coding agent (via the neutral
-``integrations/coding_agent`` seam; Pi today) in the **current workspace**, and
+``tools/coding_agent`` seam; Pi today) in the **current workspace**, and
 return a summary + git diff for review. When ``open_pr`` is requested (and the ship
 gate is enabled), it then commits the fix to a fresh namespaced branch, pushes it,
 and opens a GitHub pull request into the base branch. It **never** pushes to the

@@ -14,10 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from integrations.coding_agent import CodingResult
 from integrations.git import changed_paths, current_branch, file_fingerprints
 from integrations.git.errors import COMMIT_FAILED, PUSH_FAILED, GitCommandError
 from integrations.github.client import GitHubApiError
+from tools.coding_agent import CodingResult
 from tools.cross_vendor.fix_sentry_issue import fix_sentry_issue
 from tools.cross_vendor.fix_sentry_issue.context import IssueContext
 from tools.cross_vendor.fix_sentry_issue.errors import (

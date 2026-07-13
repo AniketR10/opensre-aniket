@@ -26,7 +26,7 @@ SaaS backend (an `integrations/<vendor>/` package)?
    The tool's logic itself correlates or orchestrates across multiple
    `integrations/<vendor>/` packages — e.g. `fix_sentry_issue` reads from
    `integrations.sentry` and hands the fix to the coding-agent seam
-   (`integrations.coding_agent`). This is
+   (`tools.coding_agent`). This is
    the narrow bucket; don't reach for it just because a tool happens to
    format its output for a second vendor (e.g. "Slack-ready" report text
    is still single-vendor logic, not cross-vendor).
@@ -61,7 +61,7 @@ not `tools/system/` or `tools/cross_vendor/`):
   `tools/work_status_report_tool/` — GitHub-only.
 - `tools/slack_send_message_tool/` — Slack-only.
 - `tools/pi_coding_tool/` — routes through the coding-agent seam
-  (`integrations.coding_agent`, default Pi).
+  (`tools.coding_agent`, default Pi).
 
 Migrating these to `integrations/<vendor>/tools/` is in scope for T-18
 (full vendor-first completion), not this policy change — moving them into

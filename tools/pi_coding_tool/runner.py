@@ -6,7 +6,7 @@ the tool class stays a thin agent-facing contract:
 - :func:`is_pi_coding_enabled` — the tool's opt-in gate (``PI_CODING_ENABLED``).
 - :func:`ensure_enabled`    — raise unless opted in.
 - :func:`ensure_cli_ready`  — coding agent installed and authenticated (via the seam).
-- :func:`execute`           — run the coding agent (``integrations/coding_agent`` seam).
+- :func:`execute`           — run the coding agent (``tools/coding_agent`` seam).
 - :func:`to_output`         — shape a stable result dict (with ``error_kind``).
 - :func:`error_output`      — the same dict shape for an early/expected failure.
 
@@ -14,7 +14,7 @@ Every return path goes through :func:`_base_output`, so the result dict always
 carries the same keys — a caller reading ``diff`` or ``changed_files`` never has to
 guard for a gate failure that short-circuited before the coding run.
 
-The tool is agent-neutral: it routes through the ``integrations/coding_agent`` seam,
+The tool is agent-neutral: it routes through the ``tools/coding_agent`` seam,
 so ``CODING_AGENT`` (default ``pi``) selects the backend. The ``PI_CODING_ENABLED``
 gate is this tool's own opt-in and is independent of provider selection.
 """
@@ -25,7 +25,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, Final
 
-from integrations.coding_agent import (
+from tools.coding_agent import (
     CodingResult,
     run_coding_task,
     verify_coding_agent,

@@ -1,4 +1,4 @@
-"""Tests for the polled coding-agent subprocess executor (``run_polled_process``)."""
+"""Tests for the polled CLI subprocess executor (``run_polled_process``)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from integrations.coding_agent.execution import run_polled_process
 from integrations.llm_cli.base import CLIInvocation
+from integrations.llm_cli.polled_runner import run_polled_process
 
 
 def _invocation(

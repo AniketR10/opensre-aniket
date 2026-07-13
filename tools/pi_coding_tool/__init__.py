@@ -24,7 +24,7 @@ mirroring how ``execute_python_code`` is gated by availability:
 Expected failures return a structured ``{"success": False, "error_kind": ...}`` dict;
 any *unexpected* exception propagates to ``BaseTool.__call__``, which reports it to
 Sentry. It edits the working tree and returns a summary + git diff; it never commits,
-pushes, or opens a PR (see ``integrations/coding_agent``).
+pushes, or opens a PR (see ``tools/coding_agent``).
 """
 
 from __future__ import annotations
