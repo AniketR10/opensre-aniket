@@ -34,7 +34,9 @@ from core.events import runtime_event_callback_from_observer
 from platform.analytics.react_turn import run_react_agent_with_telemetry
 from platform.harness_ports import (
     apply_github_repo_scope,
+    apply_gitlab_repo_scope,
     infer_github_repo_scope,
+    infer_gitlab_repo_scope,
 )
 from platform.observability.trace.prompts import persist_turn_system_prompt
 from platform.observability.trace.spans import component_span
@@ -129,7 +131,7 @@ def _resolve_gather_integrations(
     message: str,
     resolved_integrations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve integrations for one gather turn, enriching GitHub repo scope when inferred.
+    """Resolve integrations for one gather turn, enriching repository scope when inferred.
 
     ``resolved_integrations`` is the turn's already-resolved view (from
     ``TurnSnapshot``); when supplied it is used as the base instead of resolving
@@ -141,17 +143,29 @@ def _resolve_gather_integrations(
         if resolved_integrations is not None
         else resolve_and_cache_integrations(session)
     )
-    scope = infer_github_repo_scope(
+    resolved = base
+    github_scope = infer_github_repo_scope(
         message=message,
         conversation_messages=session.cli_agent_messages,
         env=os.environ,
         cwd=os.getcwd(),
         cached=session.github_repo_scope,
     )
-    if scope:
-        session.github_repo_scope = scope
-        return apply_github_repo_scope(base, scope[0], scope[1])
-    return base
+    if github_scope:
+        session.github_repo_scope = github_scope
+        resolved = apply_github_repo_scope(resolved, github_scope[0], github_scope[1])
+
+    gitlab_scope = infer_gitlab_repo_scope(
+        message=message,
+        conversation_messages=session.cli_agent_messages,
+        env=os.environ,
+        cwd=os.getcwd(),
+        cached=session.gitlab_repo_scope,
+    )
+    if gitlab_scope:
+        session.gitlab_repo_scope = gitlab_scope
+        resolved = apply_gitlab_repo_scope(resolved, *gitlab_scope)
+    return resolved
 
 
 def _build_gather_user_message(session: SessionStore, message: str) -> str:
