@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -256,25 +256,47 @@ def _untracked_paths(workspace: str) -> list[str]:
     return paths
 
 
-def _untracked_diff(workspace: str, *, max_files: int) -> str:
-    """Added-content diff for new files (``git diff HEAD`` omits untracked paths).
+def _untracked_diff(
+    workspace: str, *, max_files: int, include: Sequence[str] | None = None
+) -> tuple[str, bool]:
+    """Added-content diff for new files, and whether the file cap dropped any.
 
-    Each untracked file is rendered via ``git diff --no-index`` against
-    ``/dev/null``, which never touches the index. That command exits non-zero when
-    the files differ (always, here) — expected, so we keep whatever it wrote to
-    stdout.
+    (``git diff HEAD`` omits untracked paths.) Each untracked file is rendered via
+    ``git diff --no-index`` against ``/dev/null``, which never touches the index.
+    That command exits non-zero when the files differ (always, here) — expected, so
+    we keep whatever it wrote to stdout. *include*, when given, restricts output to
+    those paths.
+
+    The second element reports whether *max_files* left files out: the caller owns
+    the ``truncated`` flag, and dropping files silently would tell it the diff is
+    complete when it is not.
     """
+    paths = _untracked_paths(workspace)
+    if include is not None:
+        allowed = set(include)
+        paths = [path for path in paths if path in allowed]
+    capped = paths[:max_files]
     chunks: list[str] = []
-    for path in _untracked_paths(workspace)[:max_files]:
+    for path in capped:
         result = _run_git(workspace, "diff", "--no-index", "--no-color", "--", os.devnull, path)
         if result.stdout:
             chunks.append(result.stdout)
-    return "".join(chunks)
+    return "".join(chunks), len(paths) > len(capped)
+
+
+def worktree_fingerprint(workspace: str) -> dict[str, str]:
+    """Content fingerprint of every currently-dirty path (path -> git hash).
+
+    Capture this *before* a coding agent runs and hand it back to
+    :func:`worktree_diff` as ``since=`` to report only what that run changed.
+    """
+    return file_fingerprints(workspace, changed_paths(workspace))
 
 
 def worktree_diff(
     workspace: str,
     *,
+    since: Mapping[str, str] | None = None,
     max_chars: int = _MAX_DIFF_CHARS,
     max_untracked_files: int = _MAX_UNTRACKED_FILES,
 ) -> WorktreeDiff:
@@ -282,12 +304,41 @@ def worktree_diff(
 
     Backend-agnostic: any coding agent that edits the tree can be reviewed through
     this one path. The diff covers both tracked edits (``git diff HEAD``) and new
-    untracked files (added content), then is truncated to *max_chars*.
+    untracked files (added content). ``truncated`` reports whether anything was left
+    out — by *max_chars* or by *max_untracked_files* — so a caller never presents a
+    partial diff as the whole story. ``changed_files`` is always complete.
+
+    *since* is a pre-run :func:`worktree_fingerprint`. Without it the diff is the
+    whole dirty tree, which attributes a developer's existing work-in-progress to
+    the agent; with it, only paths the agent created or actually edited are
+    reported. A file that was already dirty and the agent then edited still counts
+    (its hash moved), while one it never touched is dropped.
     """
     changed_files = changed_paths(workspace)
-    tracked = _run_git(workspace, "diff", "HEAD")
-    diff = (tracked.stdout or "") + _untracked_diff(workspace, max_files=max_untracked_files)
-    truncated = False
+    scope: list[str] | None = None
+    if since is not None:
+        fingerprints = file_fingerprints(workspace, changed_files)
+        changed_files = [
+            path
+            for path in changed_files
+            if path not in since or fingerprints.get(path, "") != since[path]
+        ]
+        # An empty pathspec would make git diff the *whole* tree, so stop here —
+        # the agent genuinely changed nothing.
+        if not changed_files:
+            return WorktreeDiff(changed_files=[], diff="", truncated=False)
+        scope = changed_files
+
+    tracked = (
+        _run_git(workspace, "diff", "HEAD", "--", *scope)
+        if scope is not None
+        else _run_git(workspace, "diff", "HEAD")
+    )
+    untracked, dropped_files = _untracked_diff(
+        workspace, max_files=max_untracked_files, include=scope
+    )
+    diff = (tracked.stdout or "") + untracked
+    truncated = dropped_files
     if len(diff) > max_chars:
         diff = diff[:max_chars]
         truncated = True

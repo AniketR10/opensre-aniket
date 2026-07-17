@@ -126,20 +126,3 @@ CLI_PROVIDER_REGISTRY: dict[str, CLIProviderRegistration] = {
 def get_cli_provider_registration(provider: str) -> CLIProviderRegistration | None:
     """Return registration for *provider* if it is a registered CLI-backed LLM."""
     return CLI_PROVIDER_REGISTRY.get(provider)
-
-
-def coding_capable_providers() -> list[str]:
-    """Names of registered CLI providers whose adapter can edit a workspace.
-
-    Used to point users at a valid ``CODING_AGENT`` when they pick an unsupported or
-    answer-only provider. Instantiates each adapter (cheap constructors; no probes).
-    """
-    from integrations.llm_cli.base import CodingCLIAdapter
-
-    names = [
-        name
-        for name, reg in CLI_PROVIDER_REGISTRY.items()
-        if isinstance(adapter := reg.adapter_factory(), CodingCLIAdapter)
-        and adapter.supports_coding
-    ]
-    return sorted(names)

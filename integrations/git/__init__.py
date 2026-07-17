@@ -31,6 +31,7 @@ from integrations.git.local import (
     push_branch,
     short_head,
     worktree_diff,
+    worktree_fingerprint,
 )
 
 __all__ = [
@@ -55,4 +56,5 @@ __all__ = [
     "push_branch",
     "short_head",
     "worktree_diff",
+    "worktree_fingerprint",
 ]

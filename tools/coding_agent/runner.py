@@ -15,7 +15,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from integrations.git import GitCommandError, is_git_repo, worktree_diff
+from integrations.git import (
+    GitCommandError,
+    is_git_repo,
+    worktree_diff,
+    worktree_fingerprint,
+)
 from tools.coding_agent.backends.base import CodingBackend
 from tools.coding_agent.backends.registry import coding_capable_backends, resolve_backend
 from tools.coding_agent.config import coding_agent_provider
@@ -83,13 +88,17 @@ def run_coding_task(
                 returncode=-1,
                 error=f"workspace is not a git repository; the tool needs git to capture changes: {ws}",
             )
+        # Fingerprint the dirty tree *before* the agent runs. The workspace is a
+        # live checkout that may already hold a developer's work-in-progress, and
+        # a plain post-run scan cannot tell that apart from the agent's own edits.
+        baseline = worktree_fingerprint(ws)
     except GitCommandError as exc:
         return CodingResult(success=False, summary="", returncode=-1, error=exc.message)
 
     outcome = backend.run(task, workspace=ws, model=model, timeout_sec=timeout_sec)
 
     try:
-        diff = worktree_diff(ws)
+        diff = worktree_diff(ws, since=baseline)
     except GitCommandError as exc:
         return CodingResult(
             success=False, summary=outcome.summary, returncode=-1, error=exc.message

@@ -52,10 +52,42 @@ class _FakeBackend:
         return self._outcome
 
 
+_GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
 def _git_init(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True, env=_GIT_ENV)
+
+
+def _git_commit_all(path: Path) -> None:
+    """Commit everything, so later edits show up as working-tree changes."""
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, env=_GIT_ENV)
     subprocess.run(
-        ["git", "init", "-q"], cwd=path, check=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=path,
+        check=True,
+        env=_GIT_ENV,
     )
+
+
+class _WritingBackend:
+    """A backend that actually edits the tree, for tests that use real git."""
+
+    name = "writer"
+
+    def __init__(self, writes: dict[str, str]) -> None:
+        self._writes = writes
+
+    def detect(self) -> BackendProbe:
+        return BackendProbe(ready=True, detail="ok")
+
+    def run(
+        self, task: str, *, workspace: str, model: str | None, timeout_sec: float
+    ) -> BackendOutcome:
+        _ = (task, model, timeout_sec)
+        for name, text in self._writes.items():
+            (Path(workspace) / name).write_text(text)
+        return BackendOutcome(summary=f"wrote {', '.join(self._writes)}")
 
 
 def _diff(changed: list[str]) -> WorktreeDiff:
@@ -173,6 +205,71 @@ def test_non_cli_backend_needs_no_exit_code(tmp_path: Path) -> None:
         )
     assert result.success is True
     assert result.returncode == 0
+
+
+# --------------------------------------------------------------------------- #
+# reporting only this run's changes (real git, no mocked diff)
+#
+# The workspace is a live checkout that may already hold a developer's
+# work-in-progress. A post-run scan alone cannot tell that apart from the agent's
+# edits, so the runner fingerprints the tree *before* running.
+# --------------------------------------------------------------------------- #
+def test_pre_existing_wip_is_not_reported_as_the_agents_work(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    (tmp_path / "existing.py").write_text("original\n")
+    _git_commit_all(tmp_path)
+
+    # A developer's uncommitted work, present before the agent runs.
+    (tmp_path / "existing.py").write_text("developer WIP\n")
+    (tmp_path / "scratch.txt").write_text("developer scratch file\n")
+
+    backend = _WritingBackend({"agent.py": "# agent\n"})
+    with patch(_RESOLVE, return_value=backend):
+        result = run_coding_task(
+            "x", workspace=str(tmp_path), model=None, timeout_sec=60, provider="writer"
+        )
+
+    assert result.changed_files == ["agent.py"]
+    assert "developer WIP" not in result.diff
+    assert "developer scratch file" not in result.diff
+
+
+def test_agent_edit_to_an_already_dirty_file_is_still_reported(tmp_path: Path) -> None:
+    """The baseline must compare *content*, not just presence.
+
+    A file can be dirty before the run and still be edited by the agent — dropping it
+    for being in the baseline would hide the agent's real work.
+    """
+    _git_init(tmp_path)
+    (tmp_path / "shared.py").write_text("original\n")
+    _git_commit_all(tmp_path)
+    (tmp_path / "shared.py").write_text("developer WIP\n")
+
+    backend = _WritingBackend({"shared.py": "agent rewrote this\n"})
+    with patch(_RESOLVE, return_value=backend):
+        result = run_coding_task(
+            "x", workspace=str(tmp_path), model=None, timeout_sec=60, provider="writer"
+        )
+
+    assert result.changed_files == ["shared.py"]
+    assert "agent rewrote this" in result.diff
+
+
+def test_agent_that_changes_nothing_in_a_dirty_tree_is_not_a_success(tmp_path: Path) -> None:
+    """Pre-existing WIP must not be mistaken for the agent having done something."""
+    _git_init(tmp_path)
+    (tmp_path / "existing.py").write_text("original\n")
+    _git_commit_all(tmp_path)
+    (tmp_path / "existing.py").write_text("developer WIP\n")
+
+    backend = _WritingBackend({})  # writes nothing
+    with patch(_RESOLVE, return_value=backend):
+        result = run_coding_task(
+            "x", workspace=str(tmp_path), model=None, timeout_sec=60, provider="writer"
+        )
+
+    assert result.changed_files == []
+    assert result.diff == ""
 
 
 # --------------------------------------------------------------------------- #
