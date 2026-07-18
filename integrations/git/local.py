@@ -313,31 +313,54 @@ def worktree_diff(
     the agent; with it, only paths the agent created or actually edited are
     reported. A file that was already dirty and the agent then edited still counts
     (its hash moved), while one it never touched is dropped.
+
+    Two of this run's changes cannot appear in a diff at all: restoring a dirty file
+    back to its HEAD content, and deleting a pre-existing *untracked* file. Both
+    leave the path clean (or absent), so a post-run scan no longer sees it. They are
+    listed in ``changed_files`` and noted at the end of ``diff``, because both
+    destroy work the developer had not committed.
     """
     changed_files = changed_paths(workspace)
     scope: list[str] | None = None
+    cleared: list[str] = []
     if since is not None:
         fingerprints = file_fingerprints(workspace, changed_files)
+        still_dirty = set(changed_files)
         changed_files = [
             path
             for path in changed_files
             if path not in since or fingerprints.get(path, "") != since[path]
         ]
-        # An empty pathspec would make git diff the *whole* tree, so stop here —
-        # the agent genuinely changed nothing.
-        if not changed_files:
+        # Was dirty before the run, is not dirty now: the agent reverted it to HEAD
+        # or deleted it. git has nothing to diff, but it is still this run's work.
+        cleared = sorted(path for path in since if path not in still_dirty)
+        if not changed_files and not cleared:
             return WorktreeDiff(changed_files=[], diff="", truncated=False)
         scope = changed_files
 
-    tracked = (
-        _run_git(workspace, "diff", "HEAD", "--", *scope)
-        if scope is not None
-        else _run_git(workspace, "diff", "HEAD")
-    )
-    untracked, dropped_files = _untracked_diff(
-        workspace, max_files=max_untracked_files, include=scope
-    )
-    diff = (tracked.stdout or "") + untracked
+    # An empty pathspec would make git diff the *whole* tree, so only run a scoped
+    # diff when something is actually in scope.
+    diff = ""
+    dropped_files = False
+    if scope is None or scope:
+        tracked = (
+            _run_git(workspace, "diff", "HEAD", "--", *scope)
+            if scope is not None
+            else _run_git(workspace, "diff", "HEAD")
+        )
+        untracked, dropped_files = _untracked_diff(
+            workspace, max_files=max_untracked_files, include=scope
+        )
+        diff = (tracked.stdout or "") + untracked
+
+    if cleared:
+        changed_files = sorted({*changed_files, *cleared})
+        listed = ", ".join(cleared)
+        diff += (
+            f"\n# note: {len(cleared)} path(s) this run restored to HEAD or deleted, "
+            f"which a diff cannot show: {listed}\n"
+        )
+
     truncated = dropped_files
     if len(diff) > max_chars:
         diff = diff[:max_chars]

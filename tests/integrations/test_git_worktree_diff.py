@@ -137,6 +137,66 @@ def test_worktree_diff_since_with_no_new_changes_is_empty(tmp_path: Path) -> Non
     assert result.truncated is False
 
 
+def test_worktree_diff_since_reports_a_dirty_file_restored_to_head(tmp_path: Path) -> None:
+    """Undoing a developer's WIP leaves nothing to diff, but is still a change.
+
+    The path goes clean, so a post-run scan no longer lists it — it has to be
+    recovered from the baseline or the destroyed work is reported as "no changes".
+    """
+    _git_init_repo(tmp_path)
+    (tmp_path / "hello.txt").write_text("developer WIP\n", encoding="utf-8")
+    baseline = worktree_fingerprint(str(tmp_path))
+
+    # The agent throws the WIP away, restoring the committed content.
+    (tmp_path / "hello.txt").write_text("hello\n", encoding="utf-8")
+
+    result = worktree_diff(str(tmp_path), since=baseline)
+    assert result.changed_files == ["hello.txt"]
+    assert "hello.txt" in result.diff
+
+
+def test_worktree_diff_since_reports_a_deleted_pre_existing_untracked_file(
+    tmp_path: Path,
+) -> None:
+    """Deleting an untracked file destroys work git never recorded — never stay silent."""
+    _git_init_repo(tmp_path)
+    (tmp_path / "scratch.md").write_text("developer notes\n", encoding="utf-8")
+    baseline = worktree_fingerprint(str(tmp_path))
+
+    (tmp_path / "scratch.md").unlink()
+
+    result = worktree_diff(str(tmp_path), since=baseline)
+    assert result.changed_files == ["scratch.md"]
+    assert "scratch.md" in result.diff
+
+
+def test_worktree_diff_since_reports_a_deleted_tracked_file(tmp_path: Path) -> None:
+    """Control: a deleted *tracked* file stays dirty, so the normal path covers it."""
+    _git_init_repo(tmp_path)
+    baseline = worktree_fingerprint(str(tmp_path))
+
+    (tmp_path / "hello.txt").unlink()
+
+    result = worktree_diff(str(tmp_path), since=baseline)
+    assert result.changed_files == ["hello.txt"]
+
+
+def test_worktree_diff_since_untouched_wip_stays_excluded_alongside_a_revert(
+    tmp_path: Path,
+) -> None:
+    """Recovering cleared paths must not re-leak WIP the agent never touched."""
+    _git_init_repo(tmp_path)
+    (tmp_path / "hello.txt").write_text("developer WIP\n", encoding="utf-8")
+    (tmp_path / "untouched.md").write_text("other developer WIP\n", encoding="utf-8")
+    baseline = worktree_fingerprint(str(tmp_path))
+
+    (tmp_path / "hello.txt").write_text("hello\n", encoding="utf-8")  # agent reverts
+
+    result = worktree_diff(str(tmp_path), since=baseline)
+    assert result.changed_files == ["hello.txt"]
+    assert "other developer WIP" not in result.diff
+
+
 def test_worktree_diff_clean_tree_is_empty(tmp_path: Path) -> None:
     _git_init_repo(tmp_path)
     result = worktree_diff(str(tmp_path))
