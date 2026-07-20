@@ -6,7 +6,7 @@ import functools
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, Concatenate, Protocol
+from typing import Any, Protocol
 
 from pydantic import field_validator
 
@@ -99,17 +99,15 @@ class SupportsIsConfigured(Protocol):
     """Minimal shape :func:`read_only_query` needs from a relational config."""
 
     @property
-    def is_configured(self) -> bool: ...
+    def is_configured(self) -> bool:
+        raise NotImplementedError
 
 
-class ReadOnlyQueryDecorator[ConfigT: SupportsIsConfigured](Protocol):
-    """Decorator returned by :func:`read_only_query`, bound to one vendor."""
-
-    def __call__[**P](
-        self,
-        fn: Callable[Concatenate[Any, ConfigT, P], dict[str, Any]],
-        /,
-    ) -> Callable[Concatenate[ConfigT, P], dict[str, Any]]: ...
+# Diagnostic query functions. Deliberately loose: the decorator rewrites the
+# signature from ``fn(cursor, config, ...)`` to ``fn(config, ...)``, and spelling
+# that precisely needs a ParamSpec, which this codebase does not otherwise use
+# and which CodeQL's Python analyzer misreads as an uninitialized local.
+type ReadOnlyQuery = Callable[..., dict[str, Any]]
 
 
 def read_only_query[ConfigT: SupportsIsConfigured](
@@ -117,7 +115,7 @@ def read_only_query[ConfigT: SupportsIsConfigured](
     integration: str,
     logger: logging.Logger,
     connect: Callable[[ConfigT], Any],
-) -> ReadOnlyQueryDecorator[ConfigT]:
+) -> Callable[[ReadOnlyQuery], ReadOnlyQuery]:
     """Build a decorator that owns the read-only diagnostic-query lifecycle.
 
     Every relational diagnostic function repeats the same skeleton: bail out
@@ -137,12 +135,9 @@ def read_only_query[ConfigT: SupportsIsConfigured](
     vs. tuple rows, driver-specific error types) remain the caller's business.
     """
 
-    def decorator[**P](
-        fn: Callable[Concatenate[Any, ConfigT, P], dict[str, Any]],
-        /,
-    ) -> Callable[Concatenate[ConfigT, P], dict[str, Any]]:
+    def decorator(fn: ReadOnlyQuery, /) -> ReadOnlyQuery:
         @functools.wraps(fn)
-        def wrapper(config: ConfigT, /, *args: P.args, **kwargs: P.kwargs) -> dict[str, Any]:
+        def wrapper(config: ConfigT, /, *args: Any, **kwargs: Any) -> dict[str, Any]:
             if not config.is_configured:
                 return tool_unavailable(integration, "Not configured.")
             try:
