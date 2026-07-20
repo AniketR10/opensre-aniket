@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import functools
+import logging
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Concatenate, Protocol
 
 from pydantic import field_validator
 
 from config.strict_config import StrictConfigModel
+from core.tool_framework.utils.tool_availability import tool_unavailable
+from integrations._validation_helpers import report_validation_failure
 
 _TRUE_ENV_VALUES = frozenset({"true", "1", "yes"})
 
@@ -89,3 +93,74 @@ def resolve_stored_or_env_config[ConfigT](
         )
 
     return build_config({"host": host, "port": port, "database": database})
+
+
+class SupportsIsConfigured(Protocol):
+    """Minimal shape :func:`read_only_query` needs from a relational config."""
+
+    @property
+    def is_configured(self) -> bool: ...
+
+
+class ReadOnlyQueryDecorator[ConfigT: SupportsIsConfigured](Protocol):
+    """Decorator returned by :func:`read_only_query`, bound to one vendor."""
+
+    def __call__[**P](
+        self,
+        fn: Callable[Concatenate[Any, ConfigT, P], dict[str, Any]],
+        /,
+    ) -> Callable[Concatenate[ConfigT, P], dict[str, Any]]: ...
+
+
+def read_only_query[ConfigT: SupportsIsConfigured](
+    *,
+    integration: str,
+    logger: logging.Logger,
+    connect: Callable[[ConfigT], Any],
+) -> ReadOnlyQueryDecorator[ConfigT]:
+    """Build a decorator that owns the read-only diagnostic-query lifecycle.
+
+    Every relational diagnostic function repeats the same skeleton: bail out
+    when the config is incomplete, open a connection, run queries on a cursor,
+    close the connection, and convert any failure into the standard
+    ``tool_unavailable`` envelope after reporting it. This factory binds the
+    vendor-constant pieces (``integration``, ``logger``, ``connect``) once per
+    package so each decorated function contains only its own queries and
+    result shaping.
+
+    The decorated function is written as ``fn(cursor, config, ...)`` and is
+    exposed to callers as ``fn(config, ...)`` — the cursor is supplied by the
+    wrapper. ``method`` in the failure report is taken from ``fn.__name__``.
+
+    Cursor semantics stay with the vendor: the wrapper only opens
+    ``conn.cursor()`` and closes the connection, so DB-API differences (dict
+    vs. tuple rows, driver-specific error types) remain the caller's business.
+    """
+
+    def decorator[**P](
+        fn: Callable[Concatenate[Any, ConfigT, P], dict[str, Any]],
+        /,
+    ) -> Callable[Concatenate[ConfigT, P], dict[str, Any]]:
+        @functools.wraps(fn)
+        def wrapper(config: ConfigT, /, *args: P.args, **kwargs: P.kwargs) -> dict[str, Any]:
+            if not config.is_configured:
+                return tool_unavailable(integration, "Not configured.")
+            try:
+                conn = connect(config)
+                try:
+                    with conn.cursor() as cursor:
+                        return fn(cursor, config, *args, **kwargs)
+                finally:
+                    conn.close()
+            except Exception as err:
+                report_validation_failure(
+                    err,
+                    logger=logger,
+                    integration=integration,
+                    method=fn.__name__,
+                )
+                return tool_unavailable(integration, str(err))
+
+        return wrapper
+
+    return decorator

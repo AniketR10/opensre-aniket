@@ -1,9 +1,16 @@
 """Unit tests for the MySQL integration module."""
 
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import patch
+
 from integrations.mysql import (
     MySQLConfig,
     MySQLValidationResult,
     build_mysql_config,
+    get_server_status,
+    get_table_stats,
     mysql_config_from_env,
 )
 
@@ -163,3 +170,145 @@ class TestMySQLValidationResult:
         )
         assert result.ok is False
         assert result.detail == "MySQL connection failed: connection refused"
+
+
+class _FakeCursor:
+    """DictCursor stand-in returning queued ``fetchall`` results in order."""
+
+    def __init__(self, results: list[list[dict[str, Any]]]) -> None:
+        self._results = list(results)
+        self.statements: list[tuple[str, Any]] = []
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc_info: Any) -> bool:
+        return False
+
+    def execute(self, statement: str, params: Any = None) -> None:
+        self.statements.append((statement, params))
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._results.pop(0) if self._results else []
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _configured() -> MySQLConfig:
+    return build_mysql_config({"host": "mysql.test.local", "database": "testdb"})
+
+
+class TestDiagnosticsUnconfigured:
+    """Diagnostics short-circuit before connecting when host/database are missing."""
+
+    def test_server_status_unavailable(self) -> None:
+        result = get_server_status(build_mysql_config({}))
+        assert result["available"] is False
+        assert result["error"] == "Not configured."
+        assert result["source"] == "mysql"
+
+    def test_table_stats_unavailable(self) -> None:
+        result = get_table_stats(build_mysql_config({"host": "mysql.test.local"}))
+        assert result["available"] is False
+        assert result["error"] == "Not configured."
+
+
+class TestGetTableStats:
+    """``get_table_stats`` shapes information_schema.TABLES rows."""
+
+    def test_happy_path(self) -> None:
+        cursor = _FakeCursor(
+            [
+                [
+                    {
+                        "TABLE_NAME": "orders",
+                        "ENGINE": "InnoDB",
+                        "TABLE_ROWS": 1200,
+                        "data_mb": "3.5",
+                        "index_mb": "1.25",
+                        "total_mb": "4.75",
+                        "AUTO_INCREMENT": 1201,
+                        "TABLE_COLLATION": "utf8mb4_general_ci",
+                        "CREATE_TIME": None,
+                        "UPDATE_TIME": None,
+                    }
+                ]
+            ]
+        )
+        conn = _FakeConnection(cursor)
+
+        with patch("pymysql.connect", return_value=conn):
+            result = get_table_stats(_configured())
+
+        assert result["available"] is True
+        assert result["database"] == "testdb"
+        assert result["total_tables"] == 1
+        table = result["tables"][0]
+        assert table["table_name"] == "orders"
+        assert table["engine"] == "InnoDB"
+        assert table["row_count_estimate"] == 1200
+        assert table["size"] == {"data_mb": 3.5, "index_mb": 1.25, "total_mb": 4.75}
+        assert table["created_at"] is None
+        assert conn.closed is True
+
+    def test_connection_failure_returns_unavailable(self) -> None:
+        with (
+            patch("pymysql.connect", side_effect=OSError("connection refused")),
+            patch("integrations._relational.report_validation_failure"),
+        ):
+            result = get_table_stats(_configured())
+
+        assert result["available"] is False
+        assert result["error"] == "connection refused"
+
+
+class TestGetServerStatus:
+    """``get_server_status`` derives connection and InnoDB metrics."""
+
+    def test_computes_buffer_pool_hit_ratio(self) -> None:
+        status_rows = [
+            {"Variable_name": "Threads_connected", "Value": "25"},
+            {"Variable_name": "Threads_running", "Value": "5"},
+            {"Variable_name": "Uptime", "Value": "432000"},
+            {"Variable_name": "Questions", "Value": "1000"},
+            {"Variable_name": "Slow_queries", "Value": "42"},
+            {"Variable_name": "Innodb_buffer_pool_reads", "Value": "10"},
+            {"Variable_name": "Innodb_buffer_pool_read_requests", "Value": "1000"},
+        ]
+        variable_rows = [
+            {"Variable_name": "version", "Value": "8.0.32"},
+            {"Variable_name": "max_connections", "Value": "151"},
+        ]
+        conn = _FakeConnection(_FakeCursor([status_rows, variable_rows]))
+
+        with patch("pymysql.connect", return_value=conn):
+            result = get_server_status(_configured())
+
+        assert result["available"] is True
+        assert result["version"] == "8.0.32"
+        assert result["uptime_seconds"] == 432000
+        assert result["connections"]["current"] == 25
+        assert result["connections"]["max"] == 151
+        assert result["queries"]["slow"] == 42
+        # 1 - (10 / 1000) = 99.0%
+        assert result["innodb"]["buffer_pool_hit_ratio_percent"] == 99.0
+        assert conn.closed is True
+
+    def test_zero_read_requests_avoids_division_by_zero(self) -> None:
+        status_rows = [{"Variable_name": "Innodb_buffer_pool_read_requests", "Value": "0"}]
+        conn = _FakeConnection(_FakeCursor([status_rows, []]))
+
+        with patch("pymysql.connect", return_value=conn):
+            result = get_server_status(_configured())
+
+        assert result["innodb"]["buffer_pool_hit_ratio_percent"] == 0.0
