@@ -11,11 +11,7 @@ from __future__ import annotations
 
 from core.tool_framework.utils.tool_availability import tool_unavailable
 
-__all__ = ["MCPBridgeResponse", "unavailable_response"]
-
-# MCP bridge payloads are open string-keyed maps; every bridge aliases this shape
-# under its own name (``PostHogMCPResponse``, ``OpenClawBridgeResponse``, ...).
-type MCPBridgeResponse = dict[str, object]
+__all__ = ["unavailable_response"]
 
 
 def unavailable_response(
@@ -24,7 +20,7 @@ def unavailable_response(
     *,
     tool_name: str | None = None,
     arguments: dict[str, object] | None = None,
-) -> MCPBridgeResponse:
+) -> dict[str, object]:
     """Build the standard unavailable payload for an MCP bridge tool.
 
     Extends the base ``tool_unavailable`` envelope (``source``/``available``/
@@ -33,7 +29,7 @@ def unavailable_response(
     only when ``tool_name`` is truthy; ``arguments`` is added whenever it is not
     ``None`` (an empty dict is still recorded).
     """
-    payload: MCPBridgeResponse = tool_unavailable(source, error)
+    payload: dict[str, object] = tool_unavailable(source, error)
     if tool_name:
         payload["tool"] = tool_name
     if arguments is not None:
