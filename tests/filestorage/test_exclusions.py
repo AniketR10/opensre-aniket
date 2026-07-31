@@ -282,6 +282,51 @@ def test_an_empty_environment_variable_does_not_drop_the_stored_patterns(
     assert with_blank_bucket.bucket == "b"
 
 
+@pytest.mark.parametrize("spelling", ["none", "NONE", " None "])
+def test_the_none_sentinel_clears_the_stored_patterns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spelling: str
+) -> None:
+    """The typed way to sync a normally-excluded path for one run."""
+    from config.constants import paths
+
+    monkeypatch.setattr(paths, "OPENSRE_HOME_DIR", tmp_path)
+    (tmp_path / "config.yml").write_text(
+        "remote_sync:\n  enabled: true\n  bucket: b\n  exclude:\n    - '*.tmp'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(REMOTE_SYNC_EXCLUDE_ENV, spelling)
+
+    config = load_remote_sync_config()
+
+    assert config is not None
+    assert config.exclude.patterns == ()
+    assert bool(config.exclude) is False
+
+
+def test_the_sentinel_works_from_the_settings_file_too() -> None:
+    """Both spellings a YAML author would reach for."""
+    assert parse_exclusions("none") is NO_EXCLUSIONS
+    assert parse_exclusions(["none"]) is NO_EXCLUSIONS
+
+
+def test_none_among_other_patterns_is_a_filename_not_a_sentinel() -> None:
+    """Ambiguity resolves toward holding files back, never toward sending them.
+
+    Reading a list as "clear everything" because one entry says ``none`` would
+    upload whatever the other patterns were protecting.
+    """
+    rules = parse_exclusions(["none", "*.tmp"])
+
+    assert rules.patterns == ("none", "*.tmp")
+    assert rules.excludes("memory/none") is True
+    assert rules.excludes("memory/notes.tmp") is True
+
+
+def test_a_file_named_none_is_still_reachable_on_its_own() -> None:
+    """The sentinel steals the bare word, so the escape is documented."""
+    assert parse_exclusions(["*/none"]).excludes("memory/none") is True
+
+
 def test_a_corrupt_settings_file_does_not_sync_everything(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

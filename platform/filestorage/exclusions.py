@@ -25,6 +25,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
+from config.constants.filestorage import REMOTE_SYNC_EXCLUDE_NONE
 from platform.filestorage.errors import RemoteSyncConfigError
 
 #: Separates patterns written as one string (an environment variable, or a
@@ -116,6 +117,12 @@ def parse_exclusions(raw: object) -> ExclusionRules:
     same setting is reachable through ``config.yml`` and an environment
     variable and the two should not disagree. Anything else is a mistake worth
     reporting rather than silently syncing more than the user asked for.
+
+    The whole value being ``none`` clears the list, which is how a run syncs a
+    path it normally holds back. It has to be the *entire* value: ``none`` among
+    other patterns is read as a file called ``none``, because guessing wrong
+    there would sync everything the other patterns were holding back. A file
+    genuinely named ``none`` is still reachable as ``*/none``.
     """
     if raw is None or raw == "":
         return NO_EXCLUSIONS
@@ -140,7 +147,11 @@ def parse_exclusions(raw: object) -> ExclusionRules:
             # dict rather than set: duplicates go, written order stays, so
             # status prints the patterns back the way they were typed.
             seen[normalized] = None
-    return ExclusionRules(patterns=tuple(seen))
+
+    patterns = tuple(seen)
+    if len(patterns) == 1 and patterns[0].casefold() == REMOTE_SYNC_EXCLUDE_NONE:
+        return NO_EXCLUSIONS
+    return ExclusionRules(patterns=patterns)
 
 
 __all__ = [

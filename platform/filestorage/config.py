@@ -104,7 +104,8 @@ def _exclusions(stored: Callable[[], dict[str, Any]]) -> ExclusionRules:
     An empty variable means "not set", as it does for every other setting here,
     so the stored patterns still apply. Reading it as "exclude nothing" would
     make ``export OPENSRE_REMOTE_SYNC_EXCLUDE=$UNSET`` silently upload the paths
-    the user asked to keep local — this setting only ever fails closed.
+    the user asked to keep local. Clearing the list for one run is spelled
+    ``=none`` instead — a word a typo cannot produce by accident.
     """
     env = os.getenv(REMOTE_SYNC_EXCLUDE_ENV, "").strip()
     if env:

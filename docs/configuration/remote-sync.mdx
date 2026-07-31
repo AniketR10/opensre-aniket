@@ -142,10 +142,17 @@ remote_sync:
 ```
 
 When the environment variable holds patterns, it replaces the stored list for
-that run rather than adding to it. Setting it to an empty value counts as not
-setting it at all — the stored list stays in force — so a script that expands an
-unset name cannot quietly turn your exclusions off. To sync a path you normally
-exclude, remove it from the list rather than blanking the variable.
+that run rather than adding to it. To sync everything once, including the paths
+you normally hold back:
+
+```bash
+OPENSRE_REMOTE_SYNC_EXCLUDE=none opensre remote-sync sync
+```
+
+Blanking the variable does **not** do this — an empty value counts as not
+setting it at all, and your stored list stays in force. That is deliberate, so a
+script expanding a name that turns out to be unset cannot quietly switch your
+exclusions off and upload what you meant to keep local.
 
 Patterns match the key inside the store — `sessions/…` or `memory/…`, always
 with forward slashes — and are case-sensitive, so one settings file means the
