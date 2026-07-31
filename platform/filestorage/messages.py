@@ -11,6 +11,7 @@ from config.constants.filestorage import (
     DEFAULT_REMOTE_SYNC_PROVIDER,
     REMOTE_SYNC_BUCKET_ENV,
     REMOTE_SYNC_ENV,
+    REMOTE_SYNC_EXCLUDE_ENV,
     REMOTE_SYNC_PREFIX_ENV,
     REMOTE_SYNC_PROFILE_ENV,
     REMOTE_SYNC_PROVIDER_ENV,
@@ -18,7 +19,8 @@ from config.constants.filestorage import (
 )
 from platform.filestorage.config import RemoteSyncConfig
 from platform.filestorage.engine import SyncReport
-from platform.filestorage.operations import SyncStatus
+from platform.filestorage.exclusions import ExclusionRules
+from platform.filestorage.operations import SyncRootStatus, SyncStatus
 from platform.filestorage.providers import credential_hint_for_provider
 
 
@@ -54,6 +56,30 @@ _KEPT_REMOTE_HINT = (
     "Run a full sync (no --push-only) to take those changes first."
 )
 
+NO_EXCLUSIONS_HELP = (
+    f"Nothing is excluded. Set {REMOTE_SYNC_EXCLUDE_ENV} to a comma-separated list of "
+    "glob patterns, or a list under remote_sync.exclude, to keep paths off the store."
+)
+
+
+def root_state(root: SyncRootStatus) -> str:
+    """The parenthetical after a root's path, e.g. ``exists, 3 excluded``.
+
+    Shared so the plain-text and the styled surfaces cannot drift into
+    describing the same root two different ways.
+    """
+    state = "exists" if root.exists else "not created yet"
+    if root.excluded:
+        return f"{state}, {root.excluded} excluded"
+    return state
+
+
+def format_exclusion_lines(exclusions: ExclusionRules) -> tuple[str, ...]:
+    """The patterns in force, or one line explaining how to set some (pure)."""
+    if not exclusions:
+        return (NO_EXCLUSIONS_HELP,)
+    return ("Excluded by your settings:", *(f"  {pattern}" for pattern in exclusions.patterns))
+
 
 def format_status_lines(status: SyncStatus) -> tuple[str, ...]:
     """Plain-text status lines for CLI, REPL, or gateway sinks (pure)."""
@@ -65,8 +91,8 @@ def format_status_lines(status: SyncStatus) -> tuple[str, ...]:
         "Mirrored:",
     ]
     for root in status.roots:
-        state = "exists" if root.exists else "not created yet"
-        lines.append(f"  {root.name:<10} {root.path} ({state})")
+        lines.append(f"  {root.name:<10} {root.path} ({root_state(root)})")
+    lines.extend(format_exclusion_lines(status.exclusions))
     lines.append("Never uploaded: integration credentials and model keys.")
     return tuple(lines)
 
@@ -80,10 +106,15 @@ def format_report_lines(report: SyncReport) -> tuple[str, ...]:
     down_size = f" ({_human_size(report.downloaded_bytes)})" if report.downloaded_bytes else ""
     up_size = f" ({_human_size(report.uploaded_bytes)})" if report.uploaded_bytes else ""
     total_size = f" ({_human_size(report.total_bytes)} total)" if report.total_bytes else ""
+    excluded = len(report.excluded)
     lines: list[str] = [
         f"Sync complete — {len(downloaded)} downloaded{down_size}, "
         f"{len(uploaded)} uploaded{up_size}, {skipped} already current{total_size}."
     ]
+    if excluded:
+        # Its own line rather than a fourth clause in the summary: a run with no
+        # exclusions configured must read exactly as it did before the feature.
+        lines.append(f"{excluded} held back by your exclude settings.")
     if kept_remote:
         lines.append(f"{len(kept_remote)} kept the store's newer copy:")
         lines.extend(f"  {key}" for key in kept_remote)
@@ -103,7 +134,10 @@ def format_setup_lines(config: RemoteSyncConfig) -> tuple[str, ...]:
 
 __all__ = [
     "DISABLED_HELP",
+    "NO_EXCLUSIONS_HELP",
+    "format_exclusion_lines",
     "format_report_lines",
     "format_setup_lines",
     "format_status_lines",
+    "root_state",
 ]

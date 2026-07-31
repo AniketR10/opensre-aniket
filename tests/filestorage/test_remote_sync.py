@@ -900,6 +900,10 @@ def test_env_only_config_ignores_a_corrupt_settings_file(
     monkeypatch.setenv("OPENSRE_REMOTE_SYNC_REGION", "eu-west-2")
     monkeypatch.setenv("OPENSRE_REMOTE_SYNC_PROFILE", "env-profile")
     monkeypatch.setenv("OPENSRE_REMOTE_SYNC_PROVIDER", "aws")
+    # Exclusions are a setting like any other, so "purely by env" now includes
+    # them. Left unset, the file has to be read to find out what the user wants
+    # held back — see test_a_corrupt_settings_file_does_not_sync_everything.
+    monkeypatch.setenv("OPENSRE_REMOTE_SYNC_EXCLUDE", "*.tmp")
 
     # Act
     config = load_remote_sync_config()
@@ -908,6 +912,7 @@ def test_env_only_config_ignores_a_corrupt_settings_file(
     assert config is not None
     assert config.bucket == "env-bucket"
     assert config.prefix == "env-prefix"
+    assert config.exclude.patterns == ("*.tmp",)
 
 
 def test_list_prefix_is_delimited_so_a_sibling_bucket_path_cannot_match() -> None:

@@ -66,6 +66,7 @@ export OPENSRE_REMOTE_SYNC_BUCKET=my-opensre-bucket
 | `OPENSRE_REMOTE_SYNC_REGION` | Region override when the provider supports it (AWS) |
 | `OPENSRE_REMOTE_SYNC_PROFILE` | Named credentials profile, if opensre should not use your default (AWS) |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob read-write token (when `provider=vercel`). Ambient; opensre never stores it |
+| `OPENSRE_REMOTE_SYNC_EXCLUDE` | Comma-separated glob patterns to keep off the store. See [Exclude paths](#exclude-paths) |
 
 Naming a bucket is not enough on its own — `OPENSRE_REMOTE_SYNC` has to be set
 too, so a bucket variable left over from another tool never starts uploading.
@@ -118,6 +119,65 @@ opensre remote-sync sync
 opensre remote-sync sync --pull-only    # new machine, fetch only
 opensre remote-sync sync --push-only    # back up without pulling
 ```
+
+## Exclude paths
+
+By default every session and every memory file mirrors. Patterns hold some of
+them back:
+
+```bash
+export OPENSRE_REMOTE_SYNC_EXCLUDE='*.tmp,sessions/scratch-*'
+```
+
+Or, to keep it between machines, in `~/.opensre/config.yml`:
+
+```yaml
+remote_sync:
+  enabled: true
+  bucket: my-opensre-bucket
+  exclude:
+    - "*.tmp"
+    - sessions/scratch-*
+    - memory/local-only
+```
+
+The environment variable replaces the stored list for that run rather than
+adding to it.
+
+Patterns match the key inside the store — `sessions/…` or `memory/…`, always
+with forward slashes — and are case-sensitive, so one settings file means the
+same thing on every machine.
+
+| Pattern | Holds back |
+|---|---|
+| `*.tmp` | any file with that name, in either root, at any depth |
+| `sessions/scratch-*` | sessions whose name starts with `scratch-` |
+| `sessions/archive` | everything inside that directory |
+| `memory` | the whole memory root |
+
+`*` crosses directory separators, so `memory/*` covers nested files too.
+
+Check a pattern took effect before trusting it — `status` counts what each
+pattern currently holds back, which is the quickest way to catch a typo:
+
+```
+sessions   /home/you/.opensre/sessions (exists, 4 excluded)
+memory     /home/you/.opensre/memory (exists)
+Excluded by your settings:
+  *.tmp
+  sessions/scratch-*
+```
+
+An excluded path is held back in **both** directions: not uploaded from this
+machine, and not downloaded onto it if another machine already put it there.
+
+<Note>
+Exclusions only ever remove things from the sync. There is no `!pattern` syntax
+to add something back — opensre rejects a pattern starting with `!` — so no
+setting you write can send credentials to the store. Anything already uploaded
+before you added a pattern stays there; sync never deletes. Remove it in the
+store yourself if you want it gone.
+</Note>
 
 ## Providers
 

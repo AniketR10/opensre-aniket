@@ -24,6 +24,7 @@ from pathlib import Path
 
 from platform.filestorage.enums import SyncDirection
 from platform.filestorage.errors import RemoteSyncConfigError, UnsyncablePathError
+from platform.filestorage.exclusions import NO_EXCLUSIONS, ExclusionRules
 from platform.filestorage.ports import ObjectStore, RemoteObject
 from platform.filestorage.syncable import SyncRoot, resolved_roots, syncable_roots
 
@@ -42,6 +43,11 @@ class SyncReport:
     skipped: int = 0
     uploaded_bytes: int = 0
     downloaded_bytes: int = 0
+    #: Keys neither sent nor fetched because the user's settings hold them
+    #: back. A set, not a counter: a two-way sync sees the same excluded file
+    #: once on the way up and once on the way down, and reporting it twice
+    #: would overstate how much is being held back.
+    excluded: set[str] = field(default_factory=set)
 
     @property
     def changed(self) -> int:
@@ -82,13 +88,19 @@ def resolve_direction(*, pull_only: bool, push_only: bool) -> SyncDirection:
     return SyncDirection.BOTH
 
 
-def _local_files(root: SyncRoot) -> list[Path]:
+def local_files(root: SyncRoot) -> list[Path]:
+    """Every file under one root, sorted; empty when the root does not exist."""
     if not root.path.is_dir():
         return []
     return sorted(p for p in root.path.rglob("*") if p.is_file())
 
 
-def _relative_key(root: SyncRoot, path: Path) -> str:
+def relative_key(root: SyncRoot, path: Path) -> str:
+    """Object key for a local path. Public so status counts what a sync would.
+
+    The exclusion patterns are written against this key, so anything reporting
+    on them has to derive it exactly the way the transfer does.
+    """
     return f"{root.name}/{path.relative_to(root.path).as_posix()}"
 
 
@@ -115,6 +127,7 @@ def push(
     roots: tuple[SyncRoot, ...] | None = None,
     report: SyncReport | None = None,
     remote: list[RemoteObject] | None = None,
+    exclusions: ExclusionRules = NO_EXCLUSIONS,
 ) -> SyncReport:
     """Upload local files whose contents differ from the bucket."""
     roots = roots if roots is not None else syncable_roots()
@@ -127,16 +140,22 @@ def push(
 
     # Check every candidate before uploading any of them. A denied file found
     # halfway through must not leave earlier files already in the store.
-    planned: list[tuple[SyncRoot, Path]] = []
+    planned: list[tuple[str, Path]] = []
     for root in roots:
-        for path in _local_files(root):
+        for path in local_files(root):
+            # The deny-list runs on every candidate, before the user's patterns
+            # and regardless of them. An exclusion may drop a file from the
+            # upload; it can never stop this refusal from being raised.
             if not allowed.contains(path):
                 # Reaching here means a root pointed somewhere it should not.
                 raise UnsyncablePathError(f"refusing to upload {path}")
-            planned.append((root, path))
+            key = relative_key(root, path)
+            if exclusions.excludes(key):
+                result.excluded.add(key)
+                continue
+            planned.append((key, path))
 
-    for root, path in planned:
-        key = _relative_key(root, path)
+    for key, path in planned:
         data = path.read_bytes()
         existing = by_key.get(key)
         if existing is not None:
@@ -160,6 +179,7 @@ def pull(
     roots: tuple[SyncRoot, ...] | None = None,
     report: SyncReport | None = None,
     remote: list[RemoteObject] | None = None,
+    exclusions: ExclusionRules = NO_EXCLUSIONS,
 ) -> SyncReport:
     """Download bucket objects missing locally, or newer than the local copy."""
     roots = roots if roots is not None else syncable_roots()
@@ -169,6 +189,12 @@ def pull(
     for obj in remote if remote is not None else store.list_objects(""):
         target = _local_path_for(obj, by_name)
         if target is None:
+            continue
+        # Excluding a path means it does not belong on this machine, so the
+        # pattern holds in both directions: a file another machine still
+        # uploads is not pulled back down here.
+        if exclusions.excludes(obj.key):
+            result.excluded.add(obj.key)
             continue
         if not _should_download(obj, target):
             result.skipped += 1
@@ -210,6 +236,7 @@ def run_sync(
     *,
     direction: SyncDirection = SyncDirection.BOTH,
     roots: tuple[SyncRoot, ...] | None = None,
+    exclusions: ExclusionRules = NO_EXCLUSIONS,
 ) -> SyncReport:
     """Move files in ``direction``. Both ways pulls first, so an offline edit wins.
 
@@ -219,9 +246,9 @@ def run_sync(
     report = SyncReport()
     listing = store.list_objects("")
     if direction is not SyncDirection.PUSH:
-        pull(store, roots=roots, report=report, remote=listing)
+        pull(store, roots=roots, report=report, remote=listing, exclusions=exclusions)
     if direction is not SyncDirection.PULL:
-        push(store, roots=roots, report=report, remote=listing)
+        push(store, roots=roots, report=report, remote=listing, exclusions=exclusions)
     return report
 
 

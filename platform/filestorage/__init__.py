@@ -25,8 +25,10 @@ from platform.filestorage.config import (
 )
 from platform.filestorage.engine import (
     SyncReport,
+    local_files,
     pull,
     push,
+    relative_key,
     resolve_direction,
     run_sync,
 )
@@ -43,10 +45,18 @@ from platform.filestorage.errors import (
     RemoteSyncUnavailableError,
     UnsyncablePathError,
 )
+from platform.filestorage.exclusions import (
+    NO_EXCLUSIONS,
+    ExclusionRules,
+    parse_exclusions,
+)
 from platform.filestorage.messages import (
     DISABLED_HELP,
+    NO_EXCLUSIONS_HELP,
+    format_exclusion_lines,
     format_report_lines,
     format_status_lines,
+    root_state,
 )
 from platform.filestorage.operations import (
     SyncRootStatus,
@@ -59,7 +69,11 @@ from platform.filestorage.providers import build_object_store
 from platform.filestorage.syncable import SyncRoot, is_syncable, resolved_roots, syncable_roots
 
 __all__ = [
+    "NO_EXCLUSIONS",
+    "NO_EXCLUSIONS_HELP",
+    "ExclusionRules",
     "OrgScopeNotSupportedError",
+    "format_exclusion_lines",
     "format_status_lines",
     "format_report_lines",
     "DISABLED_HELP",
@@ -82,11 +96,15 @@ __all__ = [
     "get_sync_status",
     "is_syncable",
     "load_remote_sync_config",
+    "local_files",
+    "parse_exclusions",
     "pull",
     "push",
+    "relative_key",
     "remote_sync_enabled",
     "resolve_direction",
     "resolved_roots",
+    "root_state",
     "run_remote_sync",
     "run_sync",
     "syncable_roots",
