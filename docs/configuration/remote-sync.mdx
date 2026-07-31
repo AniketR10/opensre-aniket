@@ -141,8 +141,11 @@ remote_sync:
     - memory/local-only
 ```
 
-The environment variable replaces the stored list for that run rather than
-adding to it.
+When the environment variable holds patterns, it replaces the stored list for
+that run rather than adding to it. Setting it to an empty value counts as not
+setting it at all — the stored list stays in force — so a script that expands an
+unset name cannot quietly turn your exclusions off. To sync a path you normally
+exclude, remove it from the list rather than blanking the variable.
 
 Patterns match the key inside the store — `sessions/…` or `memory/…`, always
 with forward slashes — and are case-sensitive, so one settings file means the
@@ -157,8 +160,9 @@ same thing on every machine.
 
 `*` crosses directory separators, so `memory/*` covers nested files too.
 
-Check a pattern took effect before trusting it — `status` counts what each
-pattern currently holds back, which is the quickest way to catch a typo:
+Check your patterns took effect before trusting them — `status` shows how many
+files under each root are currently held back, so a root you expected to shrink
+still showing no count means nothing matched:
 
 ```
 sessions   /home/you/.opensre/sessions (exists, 4 excluded)

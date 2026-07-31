@@ -100,6 +100,11 @@ def _exclusions(stored: Callable[[], dict[str, Any]]) -> ExclusionRules:
     Kept apart from :func:`_env_or_stored` because the stored form may be a
     YAML list while the environment can only ever be one string, and a list
     must not be flattened to ``"['a', 'b']"`` on the way through.
+
+    An empty variable means "not set", as it does for every other setting here,
+    so the stored patterns still apply. Reading it as "exclude nothing" would
+    make ``export OPENSRE_REMOTE_SYNC_EXCLUDE=$UNSET`` silently upload the paths
+    the user asked to keep local — this setting only ever fails closed.
     """
     env = os.getenv(REMOTE_SYNC_EXCLUDE_ENV, "").strip()
     if env:

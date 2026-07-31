@@ -252,6 +252,36 @@ def test_the_environment_overrides_the_stored_patterns(
     assert config.exclude.patterns == ("env-only",)
 
 
+def test_an_empty_environment_variable_does_not_drop_the_stored_patterns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Empty means "not set" here, exactly as it does for bucket and prefix.
+
+    Reading it as "exclude nothing" would make a shell expanding an unset name
+    (``export OPENSRE_REMOTE_SYNC_EXCLUDE=$TYPO``) silently upload the paths the
+    user asked to keep local. An accidental blank has to be inert.
+    """
+    from config.constants import paths
+
+    monkeypatch.setattr(paths, "OPENSRE_HOME_DIR", tmp_path)
+    (tmp_path / "config.yml").write_text(
+        "remote_sync:\n  enabled: true\n  bucket: b\n  exclude:\n    - '*.tmp'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(REMOTE_SYNC_EXCLUDE_ENV, "")
+
+    config = load_remote_sync_config()
+
+    assert config is not None
+    assert config.exclude.patterns == ("*.tmp",)
+    # The same rule the neighbouring settings follow, checked side by side so a
+    # future change cannot make exclusions the odd one out.
+    monkeypatch.setenv(REMOTE_SYNC_BUCKET_ENV, "")
+    with_blank_bucket = load_remote_sync_config()
+    assert with_blank_bucket is not None
+    assert with_blank_bucket.bucket == "b"
+
+
 def test_a_corrupt_settings_file_does_not_sync_everything(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
