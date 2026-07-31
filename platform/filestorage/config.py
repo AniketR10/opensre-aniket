@@ -19,6 +19,7 @@ from config.constants.filestorage import (
     REMOTE_SYNC_BUCKET_ENV,
     REMOTE_SYNC_ENV,
     REMOTE_SYNC_EXCLUDE_ENV,
+    REMOTE_SYNC_EXCLUDE_OFF_ENV,
     REMOTE_SYNC_PREFIX_ENV,
     REMOTE_SYNC_PROFILE_ENV,
     REMOTE_SYNC_PROVIDER_ENV,
@@ -104,9 +105,11 @@ def _exclusions(stored: Callable[[], dict[str, Any]]) -> ExclusionRules:
     An empty variable means "not set", as it does for every other setting here,
     so the stored patterns still apply. Reading it as "exclude nothing" would
     make ``export OPENSRE_REMOTE_SYNC_EXCLUDE=$UNSET`` silently upload the paths
-    the user asked to keep local. Clearing the list for one run is spelled
-    ``=none`` instead — a word a typo cannot produce by accident.
+    the user asked to keep local. Turning the list off for a run is its own
+    switch, which has to be set on purpose and cannot be produced by a blank.
     """
+    if _truthy(os.getenv(REMOTE_SYNC_EXCLUDE_OFF_ENV, "")):
+        return NO_EXCLUSIONS
     env = os.getenv(REMOTE_SYNC_EXCLUDE_ENV, "").strip()
     if env:
         return parse_exclusions(env)
