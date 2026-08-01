@@ -513,6 +513,30 @@ def test_the_slash_surface_shows_the_same_patterns(monkeypatch: pytest.MonkeyPat
     assert "1 excluded" in output
 
 
+@pytest.mark.usefixtures("configured")
+def test_the_slash_surface_survives_bracket_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Character classes are ordinary fnmatch syntax and must not reach Rich markup raw.
+
+    Unescaped, "[a-z]" is silently swallowed by Rich's markup parser and a
+    literal "[/]" inside a pattern raises MarkupError, crashing this command on
+    every surface it serves — gateway chat included.
+    """
+    import io
+
+    from rich.console import Console
+
+    from surfaces.interactive_shell.command_registry.remote_sync_cmds import _print_status
+
+    monkeypatch.setenv(REMOTE_SYNC_EXCLUDE_ENV, "memory/[a-z]*.md,logs/[/]archive")
+    buffer = io.StringIO()
+
+    _print_status(Console(file=buffer, force_terminal=False, highlight=False, width=200))
+
+    output = buffer.getvalue()
+    assert "memory/[a-z]*.md" in output
+    assert "logs/[/]archive" in output
+
+
 def test_the_report_line_is_unchanged_when_nothing_is_excluded() -> None:
     """Existing surfaces assert this line exactly; the feature must not touch it."""
     from platform.filestorage.engine import SyncReport

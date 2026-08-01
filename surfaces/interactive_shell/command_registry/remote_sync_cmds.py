@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from rich.console import Console
+from rich.markup import escape
 
 from config.constants.filestorage import (
     DEFAULT_REMOTE_SYNC_PREFIX,
@@ -54,7 +55,12 @@ def _print_status(console: Console) -> bool:
     for root in status.roots:
         console.print(f"  {root.name:<10} {root.path} [{DIM}]({root_state(root)})[/]")
     for line in format_exclusion_lines(status.exclusions):
-        console.print(f"[{DIM}]{line}[/]")
+        # Pattern lines carry user-written glob text (character classes like
+        # "[a-z]" are ordinary fnmatch syntax), so it must be escaped before
+        # it reaches Rich markup — unescaped, "[/]" inside a pattern raises
+        # MarkupError and crashes this command on every surface it serves,
+        # gateway chat included.
+        console.print(f"[{DIM}]{escape(line)}[/]")
     console.print(f"[{DIM}]Never uploaded: integration credentials and model keys.[/]")
     return True
 
