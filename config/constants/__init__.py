@@ -268,7 +268,11 @@ from config.constants.servicenow import (
     SERVICENOW_USERNAME_ENV,
 )
 from config.constants.signoz import SIGNOZ_API_KEY_ENV, SIGNOZ_URL_ENV
-from config.constants.slack import SLACK_APP_TOKEN_ENV, SLACK_BOT_TOKEN_ENV
+from config.constants.slack import (
+    SLACK_APP_TOKEN_ENV,
+    SLACK_BOT_TOKEN_ENV,
+    SLACK_FILE_HOST_SUFFIXES,
+)
 from config.constants.smtp import (
     SMTP_DEFAULT_TO_ENV,
     SMTP_FROM_ADDRESS_ENV,
@@ -512,6 +516,7 @@ __all__ = [
     "SIGNOZ_URL_ENV",
     "SLACK_APP_TOKEN_ENV",
     "SLACK_BOT_TOKEN_ENV",
+    "SLACK_FILE_HOST_SUFFIXES",
     "SMTP_DEFAULT_TO_ENV",
     "SMTP_FROM_ADDRESS_ENV",
     "SMTP_HOST_ENV",
