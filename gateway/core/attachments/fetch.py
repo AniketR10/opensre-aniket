@@ -6,8 +6,8 @@ attacker-influenced URL would otherwise be handed the credential on the very
 first request. The host is therefore allowlisted before anything is opened.
 
 Redirects are then resolved here rather than by ``follow_redirects=True`` so the
-allowlist is re-checked on every hop and the credential is dropped the moment
-the chain leaves it. httpx does strip ``Authorization`` across origins on its
+allowlist is re-checked on every hop and the download stops before opening a
+connection outside it. httpx does strip ``Authorization`` across origins on its
 own, but that is a library detail to depend on rather than enforce, and it
 carves out http-to-https redirects, which keep the header.
 """
@@ -57,8 +57,13 @@ def _next_url(current_url: str, location: str, log_prefix: str) -> str | None:
     if not location:
         logger.warning("%s redirect without a location header", log_prefix)
         return None
-    target = urljoin(current_url, location)
-    if urlparse(target).scheme != "https":
+    try:
+        target = urljoin(current_url, location)
+        scheme = urlparse(target).scheme
+    except ValueError:
+        logger.warning("%s redirect target is invalid", log_prefix)
+        return None
+    if scheme != "https":
         logger.warning("%s redirect to a non-https target rejected", log_prefix)
         return None
     return target
@@ -90,10 +95,8 @@ def download_attachment(
     """GET ``url`` with the credential pinned to ``host_suffixes``; None on failure.
 
     The first request is refused unless ``url`` is an https URL on an allowlisted
-    host. Each redirect is followed manually, and ``authorization`` is attached
-    only while the current hop is still on an allowlisted host — a vendor CDN may
-    hand off to a pre-signed URL elsewhere, which needs no credential and must
-    not receive one. Oversized bodies are dropped rather than truncated.
+    host. Each redirect is followed manually only while its target remains on an
+    allowlisted host. Oversized bodies are dropped rather than truncated.
     """
     if not (url and authorization):
         return None
@@ -103,15 +106,10 @@ def download_attachment(
     current_url = url
     try:
         for _hop in range(max_redirects + 1):
-            headers: dict[str, str] = (
-                {"Authorization": authorization}
-                if is_allowed_host(current_url, host_suffixes)
-                else {}
-            )
             with httpx.stream(
                 "GET",
                 current_url,
-                headers=headers,
+                headers={"Authorization": authorization},
                 follow_redirects=False,
                 timeout=timeout,
             ) as response:
@@ -121,9 +119,12 @@ def download_attachment(
                     )
                     if target is None:
                         return None
+                    if not is_allowed_host(target, host_suffixes):
+                        logger.warning("%s redirect target host rejected", log_prefix)
+                        return None
                     current_url = target
                     continue
-                if response.status_code != httpx.codes.OK:
+                if response.status_code != HTTPStatus.OK:
                     logger.warning("%s download HTTP %s", log_prefix, response.status_code)
                     return None
                 return _read_capped(response, max_bytes, log_prefix)

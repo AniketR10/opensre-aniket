@@ -289,13 +289,13 @@ def test_run_repl_async_failed_resume_flushes_starter_session(
 
     session = Session()
     flushed: list[str] = []
-    original_flush = session.storage.flush
+    original_flush = session.store.flush
 
     def _track_flush(current_session: Session) -> None:
         flushed.append(current_session.session_id)
         original_flush(current_session)
 
-    monkeypatch.setattr(session.storage, "flush", _track_flush)
+    monkeypatch.setattr(session.store, "flush", _track_flush)
 
     class _PromptSession:
         history = None
@@ -593,12 +593,12 @@ def test_turn_output_and_prompt_echo_reach_the_supplied_console() -> None:
     from rich.console import Console
 
     from surfaces.interactive_shell.runtime.turn_host import (
-        AgentTurnRuntime,
+        AgentTurnResources,
         _streaming_console,
     )
 
     captured = Console(file=StringIO(), force_terminal=False, width=80)
-    runtime = AgentTurnRuntime(
+    runtime = AgentTurnResources(
         session=Session(),
         state=SimpleNamespace(),
         spinner=SimpleNamespace(streaming=False, bytes_in=0),
@@ -630,12 +630,12 @@ def test_turn_output_reaches_capture_and_record_on_the_supplied_console() -> Non
     from rich.console import Console
 
     from surfaces.interactive_shell.runtime.turn_host import (
-        AgentTurnRuntime,
+        AgentTurnResources,
         _streaming_console,
     )
 
-    def build_runtime(console: Console) -> AgentTurnRuntime:
-        return AgentTurnRuntime(
+    def build_runtime(console: Console) -> AgentTurnResources:
+        return AgentTurnResources(
             session=Session(),
             state=SimpleNamespace(),
             spinner=SimpleNamespace(streaming=False, bytes_in=0),
@@ -662,11 +662,11 @@ def test_turn_output_falls_back_to_the_shell_terminal() -> None:
     import threading
 
     from surfaces.interactive_shell.runtime.turn_host import (
-        AgentTurnRuntime,
+        AgentTurnResources,
         _streaming_console,
     )
 
-    runtime = AgentTurnRuntime(
+    runtime = AgentTurnResources(
         session=Session(),
         state=SimpleNamespace(),
         spinner=SimpleNamespace(streaming=False, bytes_in=0),
@@ -830,41 +830,51 @@ def test_action_investigation_ports_forward_the_supplied_console(
     assert seen_sample == [captured]
 
 
-def test_investigation_stage_progress_reaches_the_supplied_console() -> None:
-    """Stage progress must follow the caller's console, not just the renderer's.
+def test_streamed_run_paints_only_through_the_renderer_on_the_supplied_console() -> None:
+    """The StreamRenderer is the single painter for a streamed foreground run.
 
-    Investigation stages (``intake``, ``gather_evidence``, ``resolve_integrations``,
-    ``upstream_correlation``) call the process-wide ``get_tracker()`` rather than
-    the renderer's own tracker. Wiring only the renderer left every
-    ``tracker.start(...)`` line — the running commentary of an investigation —
-    going to the shell terminal while the embedder captured nothing of it.
+    The streamed pipeline silences the process-wide tracker at stream start;
+    stage progress reaches the caller's console through the StreamRenderer's
+    events. Re-arming the global tracker for the run would give every stage a
+    second painter on the same console (doubled READ/PLAN progress lines).
     """
     # Arrange
+    from platform.observability.render.progress import (
+        NoopProgressTracker,
+        get_progress_tracker,
+        silence_progress_tracker,
+    )
     from surfaces.interactive_shell.runtime.investigation_adapter import (
         repl_foreground_renderer,
     )
-    from surfaces.interactive_shell.ui.output import tracker as tracker_module
 
     captured = Console(file=io.StringIO(), force_terminal=False, width=80)
-    seen: list[Console | None] = []
+    silence_progress_tracker()
+    constructed: dict[str, Any] = {}
+    mid_stream_trackers: list[type] = []
 
-    def _render(events: Any) -> dict[str, Any]:
-        # Runs while the renderer is active, exactly where a stage would call it.
-        seen.append(tracker_module._tracker_console)
-        return {}
+    def _fake_stream_renderer(**kwargs: Any) -> SimpleNamespace:
+        constructed.update(kwargs)
 
-    original = tracker_module._tracker_console
+        def _render(_events: Any) -> dict[str, Any]:
+            # Runs while the renderer is active, exactly where a stage would
+            # call ``get_progress_tracker()`` from the pipeline thread.
+            mid_stream_trackers.append(type(get_progress_tracker()))
+            return {}
+
+        return SimpleNamespace(render_stream=_render)
 
     # Act
     import surfaces.cli.ui.renderer as renderer_module
 
     real_renderer = renderer_module.StreamRenderer
-    renderer_module.StreamRenderer = lambda **_kw: SimpleNamespace(render_stream=_render)  # type: ignore[assignment]
+    renderer_module.StreamRenderer = _fake_stream_renderer  # type: ignore[assignment]
     try:
         repl_foreground_renderer(captured)(iter(()))
     finally:
         renderer_module.StreamRenderer = real_renderer  # type: ignore[assignment]
 
-    # Assert
-    assert seen == [captured]
-    assert tracker_module._tracker_console is original
+    # Assert: the renderer paints to the caller's console; the global tracker
+    # stays silenced for the whole stream.
+    assert constructed.get("console") is captured
+    assert mid_stream_trackers == [NoopProgressTracker]

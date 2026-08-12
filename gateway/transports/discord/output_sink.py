@@ -38,6 +38,9 @@ class DiscordOutputSink:
         tool_hooks: object | None = None,
     ) -> None:
         self.tool_hooks = tool_hooks
+        # Set per turn by this transport's dispatcher; the turn handler reads it
+        # to give tools a cooperative cancel signal on soft timeout or stop.
+        self.turn_cancel: threading.Event | None = None
         self._bot_token = bot_token
         self._channel_id = channel_id
         self._edit_interval = edit_interval_seconds
@@ -66,8 +69,9 @@ class DiscordOutputSink:
         label: str,
         chunks: Iterable[str],
         suppress_if_starts_with: str | None = None,
+        defer_want_me_to_closer: bool = False,
     ) -> str:
-        _ = (label, suppress_if_starts_with)
+        _ = (label, suppress_if_starts_with, defer_want_me_to_closer)
         parts: list[str] = []
         for chunk in chunks:
             parts.append(str(chunk))
@@ -80,18 +84,38 @@ class DiscordOutputSink:
     def set_tool_status(self, text: str) -> None:
         self._set_status(text)
 
+    def finish_streamed_response(self, text: str) -> None:
+        self.finalize(text)
+
     def finalize(self, text: str) -> None:
         body = (text or EMPTY_RESPONSE_MESSAGE).strip()
         chunks = split_discord_content(body)
         if not chunks:
             return
         with self._lock:
-            if not self._message_id:
+            # Release the placeholder so a later session-goal turn posts a new
+            # message instead of overwriting the answer already delivered.
+            message_id = self._message_id
+            self._message_id = ""
+            if not message_id:
+                # Continuation turn: nothing to edit, so deliver fresh messages.
+                for extra in chunks[:-1]:
+                    send_message(
+                        channel_id=self._channel_id,
+                        content=extra,
+                        bot_token=self._bot_token,
+                    )
+                send_message_with_components(
+                    channel_id=self._channel_id,
+                    content=chunks[-1],
+                    components=feedback_components(),
+                    bot_token=self._bot_token,
+                )
                 return
             if len(chunks) == 1:
                 edit_message_with_components(
                     channel_id=self._channel_id,
-                    message_id=self._message_id,
+                    message_id=message_id,
                     content=chunks[0],
                     components=feedback_components(),
                     bot_token=self._bot_token,
@@ -99,7 +123,7 @@ class DiscordOutputSink:
                 return
             edit_message(
                 channel_id=self._channel_id,
-                message_id=self._message_id,
+                message_id=message_id,
                 content=chunks[0],
                 bot_token=self._bot_token,
             )

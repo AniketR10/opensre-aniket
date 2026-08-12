@@ -12,8 +12,8 @@ SLACK_SILO_TEAM_IDS_ENV = "OPENSRE_SILO_TEAM_IDS"
 
 # File hosts we may fetch with the bot token. ``url_private`` points at
 # ``files.slack.com``; downloads redirect within Slack's own domains, and the
-# suffix match covers those. A hop anywhere else (a pre-signed CDN URL, or an
-# attacker's host) is still followed, but without the token.
+# suffix match covers those. A hop anywhere else is rejected before opening a
+# connection.
 SLACK_FILE_HOST_SUFFIXES: tuple[str, ...] = (
     "slack.com",
     "slack-files.com",

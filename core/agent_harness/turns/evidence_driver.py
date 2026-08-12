@@ -22,13 +22,17 @@ from typing import Any, Protocol
 
 from core.agent import Agent
 from core.agent_harness.agent_builder import AgentConfig, build_agent
-from core.agent_harness.ports import ErrorReporter, SessionStore, ToolEventObserver
+from core.agent_harness.ports import ErrorReporter, SessionState, ToolEventObserver
 from core.agent_harness.prompts.gather import build_gather_system_prompt
 from core.agent_harness.prompts.memory.conversation import (
     NO_HISTORY_PLACEHOLDER,
     format_recent_conversation,
 )
 from core.agent_harness.session.integration_resolution import resolve_and_cache_integrations
+from core.agent_harness.turns.gather_observation import (
+    GatheredEvidence,
+    tool_results_from_executed,
+)
 from core.agent_harness.turns.goal_review import build_gather_goal_reviewer
 from core.agent_harness.turns.source_circuit_breaker import SourceCircuitBreaker
 from core.domain.alerts.alert_source import secondary_tool_sources
@@ -68,7 +72,7 @@ class GatherAgentFactory(Protocol):
         self,
         *,
         llm: Any,
-        session: SessionStore,
+        session: SessionState,
         gather_tools: list[Any],
         resolved: dict[str, Any],
         on_progress: ToolEventObserver | None,
@@ -120,9 +124,15 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _format_observation(executed: list[tuple[Any, Any]]) -> str:
-    """Render executed (tool_call, output) pairs into a compact prompt block."""
+    """Render executed (tool_call, output) pairs into a compact prompt block.
+
+    Newest tools first so head truncation at ``_MAX_OBSERVATION_CHARS`` keeps
+    late results (e.g. ``execute-sql`` after bulky schema discovery).
+    """
     blocks: list[str] = []
-    for tc, output in executed:
+    # Chronological ``executed`` → reverse so the answer prompt sees the last
+    # tool first; ``text[:limit]`` then drops the oldest discovery noise.
+    for tc, output in reversed(executed):
         args = json.dumps(tc.input, default=str, sort_keys=True)
         body = output if isinstance(output, str) else json.dumps(output, default=str)
         blocks.append(
@@ -132,7 +142,7 @@ def _format_observation(executed: list[tuple[Any, Any]]) -> str:
 
 
 def _resolve_gather_integrations(
-    session: SessionStore,
+    session: SessionState,
     message: str,
     resolved_integrations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -168,7 +178,7 @@ def _resolve_gather_integrations(
     )
 
 
-def _build_gather_user_message(session: SessionStore, message: str) -> str:
+def _build_gather_user_message(session: SessionState, message: str) -> str:
     messages = session.cli_agent_messages[-MAX_CONVERSATION_MESSAGES:]
     history = format_recent_conversation(messages, max_turns=3)
     if history == NO_HISTORY_PLACEHOLDER:
@@ -212,12 +222,13 @@ def _load_gather_llm_or_none(error_reporter: ErrorReporter | None) -> Any | None
 def _build_evidence_agent(
     *,
     llm: Any,
-    session: SessionStore,
+    session: SessionState,
     gather_tools: list[Any],
     resolved: dict[str, Any],
     on_progress: ToolEventObserver | None,
     message: str,
     max_iterations: int = _MAX_GATHER_ITERATIONS,
+    tool_resources: dict[str, Any] | None = None,
 ) -> Agent[Any]:
     """Build the Agent for one evidence-gather turn.
 
@@ -238,13 +249,14 @@ def _build_evidence_agent(
         tool_hooks=SourceCircuitBreaker().hooks(),
         on_runtime_event=runtime_event_callback_from_observer(on_progress),
         goal=build_gather_goal_reviewer(llm, message),
+        tool_resources=dict(tool_resources or {}),
     )
     return build_agent(config)
 
 
 def gather_tool_evidence(
     message: str,
-    session: SessionStore,
+    session: SessionState,
     *,
     on_progress: ToolEventObserver | None = None,
     persist: PersistToolCalls | None = None,
@@ -252,20 +264,26 @@ def gather_tool_evidence(
     agent_factory: GatherAgentFactory | None = None,
     resolved_integrations: dict[str, Any] | None = None,
     max_iterations: int | None = None,
-) -> str | None:
+    is_cancelled: Callable[[], bool] | None = None,
+) -> GatheredEvidence | None:
     """Run a bounded tool-calling loop and return collected evidence, or None.
 
-    Returns a formatted observation block when at least one tool was executed;
-    otherwise ``None`` so the caller falls back to the normal text-only answer.
-    Any failure is reported and swallowed (returns ``None``) — gathering must
-    never break the conversational turn.
+    Returns :class:`GatheredEvidence` (prompt text + structured tool payloads)
+    when at least one tool was executed; otherwise ``None`` so the caller
+    falls back to the normal text-only answer. Any failure is reported and
+    swallowed (returns ``None``) — gathering must never break the
+    conversational turn.
     """
 
     def _run_gather_turn() -> Any | None:
         # Tool discovery, integration resolution, and LLM load run inside this
         # helper, within the ``_safe_execute`` fallback boundary.
+        from core.agent_harness.turns.host_cancel import cancel_tool_resources
         from platform.harness_ports import get_investigation_tools
 
+        if is_cancelled is not None and is_cancelled():
+            log.debug("gather_evidence skip: host cancelled")
+            return None
         resolved = _resolve_gather_integrations(
             session, message, resolved_integrations=resolved_integrations
         )
@@ -286,16 +304,30 @@ def gather_tool_evidence(
             len(resolved),
             iteration_cap,
         )
-        build_agent_for_turn = agent_factory or _build_evidence_agent
-        agent = build_agent_for_turn(
-            llm=llm,
-            session=session,
-            gather_tools=gather_tools,
-            resolved=resolved,
-            on_progress=on_progress,
-            message=message,
-            max_iterations=iteration_cap,
-        )
+        tool_resources = cancel_tool_resources(is_cancelled)
+        if agent_factory is None:
+            agent = _build_evidence_agent(
+                llm=llm,
+                session=session,
+                gather_tools=gather_tools,
+                resolved=resolved,
+                on_progress=on_progress,
+                message=message,
+                max_iterations=iteration_cap,
+                tool_resources=tool_resources,
+            )
+        else:
+            # Test/custom factories keep the historical signature; cancel probe
+            # still short-circuits before this path via ``is_cancelled`` above.
+            agent = agent_factory(
+                llm=llm,
+                session=session,
+                gather_tools=gather_tools,
+                resolved=resolved,
+                on_progress=on_progress,
+                message=message,
+                max_iterations=iteration_cap,
+            )
         result = run_react_agent_with_telemetry(
             agent,
             [{"role": "user", "content": _build_gather_user_message(session, message)}],
@@ -336,11 +368,16 @@ def gather_tool_evidence(
         if persist is not None:
             persist(result.executed)
         log.debug("gather_evidence done tools_executed=%s", len(result.executed))
-        return _format_observation(result.executed)
+        return GatheredEvidence(
+            observation=_format_observation(result.executed),
+            tool_results=tool_results_from_executed(result.executed),
+            truncated=bool(result.hit_iteration_cap),
+        )
 
 
 __all__ = [
     "GatherAgentFactory",
+    "GatheredEvidence",
     "MAX_REPORT_GATHER_ITERATIONS",
     "PersistToolCalls",
     "gather_tool_evidence",

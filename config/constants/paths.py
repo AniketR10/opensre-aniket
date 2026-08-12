@@ -31,7 +31,17 @@ PROJECT_ROOT = REPO_ROOT
 
 SYNTHETIC_SCENARIOS_DIR = REPO_ROOT / "tests" / "synthetic" / "rds_postgres"
 
-OPENSRE_HOME_DIR = Path.home() / ".opensre"
+OPENSRE_HOME_ENV = "OPENSRE_HOME"
+
+
+def _resolve_opensre_home() -> Path:
+    override = os.getenv(OPENSRE_HOME_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".opensre"
+
+
+OPENSRE_HOME_DIR = _resolve_opensre_home()
 OPENSRE_TMP_DIR = Path(tempfile.gettempdir()) / "opensre"
 
 # Set by the deployed Slack service to the mounted, org-chrooted volume.
@@ -93,8 +103,9 @@ def opensre_home() -> Path:
 
     The mount named by ``OPENSRE_CONTEXT_ROOT`` belongs to one organization, so
     it is used only for a turn that names that organization. Anything unbound —
-    Telegram, boot-time integration reads, the CLI — stays on the host root
-    rather than writing into a customer's volume.
+    boot-time integration reads, the CLI — stays on the host root rather than
+    writing into a customer's volume. Chat transports bind an org scope and
+    therefore use the mount (or ``orgs/<id>/`` nest) when configured.
 
     Without the mount, a bound org principal nests under
     ``~/.opensre/orgs/<org_id>/`` so several organizations can be exercised on
@@ -186,6 +197,7 @@ def ensure_opensre_tmp_dir() -> Path:
 __all__ = [
     "CONTEXT_ROOT_ENV",
     "OPENSRE_HOME_DIR",
+    "OPENSRE_HOME_ENV",
     "OPENSRE_TMP_DIR",
     "ORGS_DIR_NAME",
     "USERS_DIR_NAME",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from config.constants.gateway import NEW_SESSION_MESSAGE
+from config.principal import StorageScope
 from core.agent_harness.session import SessionCore
 from gateway.core.storage import SessionResolver
 from gateway.transports.telegram.inbound_security import (
@@ -18,6 +20,7 @@ def resolve_or_rotate_session(
     *,
     session_resolver: SessionResolver,
     client: TelegramBotClient,
+    scope: StorageScope,
 ) -> SessionCore | None:
     """Apply inbound decision side effects, then resolve or rotate the REPL session."""
     persist_policy_if_needed(decision)
@@ -31,10 +34,20 @@ def resolve_or_rotate_session(
         return None
 
     if decision.reply_text == "__ROTATE_SESSION__":
-        session = session_resolver.rotate(user_id=event.user_id, chat_id=event.chat_id)
-        client.send_message(event.chat_id, "Started a new session.")
+        session = session_resolver.rotate(
+            user_id=event.user_id,
+            chat_id=event.chat_id,
+            principal=scope.principal,
+            actor=scope.actor,
+        )
+        client.send_message(event.chat_id, NEW_SESSION_MESSAGE)
         if event.text.strip().lower() == "/new":
             return None
         return session
 
-    return session_resolver.resolve(user_id=event.user_id, chat_id=event.chat_id)
+    return session_resolver.resolve(
+        user_id=event.user_id,
+        chat_id=event.chat_id,
+        principal=scope.principal,
+        actor=scope.actor,
+    )

@@ -74,6 +74,81 @@ HANDOFF_GUIDANCE: dict[str, str] = {
         "mean, do NOT ask for alert context, and do NOT suggest starting a new "
         "investigation.\n\n"
     ),
+    # Metric/read ask with the authoritative integration missing.
+    # Prefix key: ``build_handoff_guidance_block`` matches ``evidence_tier:L0_degraded:…``.
+    "evidence_tier:L0_degraded": (
+        "The turn's authoritative live source is NOT connected in this session "
+        "(evidence tier L0_degraded; the service id is the suffix after "
+        "`evidence_tier:L0_degraded:`). Finish a useful answer without live "
+        "data — do not stall on discovery or empty tool lists.\n"
+        "Structure the reply like this:\n"
+        "1. One plain sentence: you cannot return a live count because that "
+        "source is not connected (name it).\n"
+        "2. How to measure once connected (e.g. confirm the OS property name "
+        "in the schema — `$os` vs `$os_name`).\n"
+        "3. A short draft query in a fenced code block, clearly labeled as a "
+        "draft to verify after connect — never invent metric numbers as fact.\n"
+        "Never claim the source is connected, never imply a live query already "
+        "ran. Do NOT offer a full incident investigation. Do NOT close with "
+        "**Want me to:** (no live query offer, no investigation offer). "
+        "Do NOT thrash on empty tool listings. The harness appends one "
+        "integration upgrade CTA after your reply — do not duplicate that CTA "
+        "and do not open an onboarding wizard unprompted. A bare user yes after "
+        "that CTA will run the connect slash; do not invent a second Want-me-to.\n\n"
+    ),
+    # Connected preferred source failed auth/config after gather.
+    # Prefix: ``evidence_tier:L0_degraded:config:<ids>`` (matched before plain L0).
+    "evidence_tier:L0_degraded:config": (
+        "The turn's authoritative live source IS registered in this session, "
+        "but gather failed because of credentials or configuration "
+        "(evidence tier L0_degraded config; service ids follow "
+        "`evidence_tier:L0_degraded:config:`). Be honest about the failure — "
+        "do not invent a live count.\n"
+        "Structure the reply like this:\n"
+        "1. One plain sentence: the named source failed auth/config (quote "
+        "the error briefly if present in the tool results).\n"
+        "2. How to measure once credentials work (property names / draft "
+        "query labeled as draft — never invent metric numbers as fact).\n"
+        "Do NOT claim the query succeeded. Do NOT offer a full incident "
+        "investigation. Do NOT close with **Want me to:**. The harness "
+        "appends one reconnect/setup CTA after your reply — do not duplicate "
+        "it and do not open an onboarding wizard unprompted.\n\n"
+    ),
+    # SessionGoal checklist progress (host loop / continuation nudges).
+    "session_goal:": (
+        "An session goal is active. When you finish a checklist item, "
+        "include the structured tag `session_goal:done=<0-based-index>` "
+        "(comma-separate multiple). When every item is done, include "
+        "`session_goal:achieved`. Put those tags on their own at the end of "
+        "the reply; the harness strips them before the user sees the text. "
+        "Do not ask whether to continue while the goal is active. "
+        "Do NOT close with **Want me to:** (no investigation offer, no "
+        "follow-up menu) — the session-goal loop owns continuation.\n\n"
+    ),
+    # Prefix key: ``build_handoff_guidance_block`` matches any
+    # ``database_query:<topic>`` tag (mysql_active_connections, mariadb_dashboard, …).
+    "database_query:": (
+        "The action planner handed off a named database or tool query (MySQL, "
+        "MariaDB, etc.). Name the database/tool the user asked about in your answer "
+        "(do not refer to it only as 'that query'). If it is not connected in this "
+        "session, explain how to connect it: `/mcp connect <server>` for MCP "
+        "database tools, or `/integrations setup <service>` when a first-party "
+        "integration exists. Do NOT offer a full incident investigation for a "
+        "read-only connection or query request. Do NOT answer with only a generic "
+        "'no integrations' line that omits the named database/tool.\n\n"
+    ),
+    # Prefix key: bare incident / symptom statements (oracle 325 family).
+    "incident_description:": (
+        "The action planner handed off a bare incident or symptom description "
+        "(no explicit investigate verb). In your reply, name the user's stated "
+        "service/component and any error codes or rates they gave (for example "
+        "checkout, 502, 30%) before asking for more context or offering a full "
+        "investigation. Do not paraphrase the incident into a generic "
+        "'production error pattern' that drops those specifics. With little or "
+        "no connected evidence, still acknowledge the reported symptoms, say "
+        "what you would check next, and close with **Want me to:** run a full "
+        "investigation — do not claim you cannot help.\n\n"
+    ),
 }
 
 # The short goal contract (shell only). Facts stay in setup_state CONTEXT;
@@ -177,6 +252,10 @@ INTERACTION_RULES = (
     "not invent subcommands. For investigation-flow questions, use the "
     "investigation flow reference below and do not claim the pipeline "
     "definition is unavailable.\n"
+    "When the user stated a concrete service, error code, or rate (for "
+    "example checkout returning 502s for 30% of requests), keep those terms "
+    "in the reply — do not replace them with a vague 'production error "
+    "pattern' when asking for more context or offering investigation.\n"
     "For vague operational questions (for example why a database is slow): "
     "when gathered tool results below contain relevant evidence, lead with "
     "what that evidence shows. Restate the question and ask for the target "
@@ -191,8 +270,11 @@ INTERACTION_RULES = (
     "those as available thread context for follow-up questions; do not ask the "
     "user to paste values that are already present there.\n\n"
     "When the user asked a cause/why question and this turn gathered quick "
-    "evidence, lead with what the evidence shows and close with **Want me to:** "
-    "run a full investigation. Make the offer once — skip it when the evidence "
+    "evidence, lead with what the evidence shows and close with exactly "
+    "**Want me to:** run a full investigation — that exact phrase, once, as "
+    "the final line. Do NOT offer paste-an-alert, /integrations setup, or a "
+    "dual menu instead of that closer (the runtime arms a structured accept on "
+    "it, dual closers break bare yes). Skip the offer only when the evidence "
     "already resolves the question or an investigation just ran.\n\n"
 )
 
