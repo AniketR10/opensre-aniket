@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from core.domain.background_investigations import BackgroundInvestigationRecord
-from infrastructure.delivery.notifications.outbound_registry import (
-    BACKGROUND_RCA,
-    register_outbound_adapter,
-)
+from infrastructure.delivery.notifications.outbound_registry import BACKGROUND_RCA
 from infrastructure.delivery.notifications.rca_summary import summary_sections
 
 
@@ -70,4 +67,3 @@ class _BuzzBackgroundAdapter:
 
 
 buzz_background_adapter = _BuzzBackgroundAdapter()
-register_outbound_adapter(buzz_background_adapter)

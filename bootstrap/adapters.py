@@ -68,10 +68,11 @@ def install_notification_adapters() -> tuple[str, ...]:
     its vendor transport, because each keeps its client import inside the
     delivery function.
 
-    Registers the adapter objects rather than relying on the import side effect
-    alone. Imports are cached, so a re-import after
-    ``clear_outbound_adapters()`` runs no module body and would leave the
-    registry empty while this function reported success.
+    The adapter modules only define their adapter; this step is the one place
+    that registers one. Nothing registers at import time, so a module imported
+    on its own (a tool reaching for ``deliver_email_notification``, say) leaves
+    the registry untouched, and this step still repopulates a registry a test
+    cleared, because it registers objects rather than replaying a cached import.
     """
     from infrastructure.delivery.notifications.outbound_registry import (
         register_outbound_adapter,

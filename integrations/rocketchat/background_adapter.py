@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from core.domain.background_investigations import BackgroundInvestigationRecord
-from infrastructure.delivery.notifications.outbound_registry import (
-    BACKGROUND_RCA,
-    register_outbound_adapter,
-)
+from infrastructure.delivery.notifications.outbound_registry import BACKGROUND_RCA
 from infrastructure.delivery.notifications.rca_summary import summary_sections
 
 
@@ -92,4 +89,3 @@ class _RocketChatBackgroundAdapter:
 
 
 rocketchat_background_adapter = _RocketChatBackgroundAdapter()
-register_outbound_adapter(rocketchat_background_adapter)
