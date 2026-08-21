@@ -21,6 +21,10 @@ class _Adapter:
 
 @pytest.fixture(autouse=True)
 def _reset_installed_bundle() -> None:
+    # Reset on the way in as well as out: a bundle installed by an earlier test
+    # module (booting a real process profile installs one) otherwise survives
+    # into the "before any bundle is installed" case.
+    delivery_bundle._installed = None
     yield
     delivery_bundle._installed = None
 
