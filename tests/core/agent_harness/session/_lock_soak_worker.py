@@ -26,6 +26,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from core.agent_harness.session.persistence import jsonl_store  # noqa: E402
 from core.agent_harness.session.persistence.jsonl_store import JsonlSessionStore  # noqa: E402
+from core.agent_harness.session.persistence.paths import session_path  # noqa: E402
 
 _BARRIER_POLL_SECONDS = 0.01
 _BARRIER_TIMEOUT_SECONDS = 120.0
@@ -57,6 +58,23 @@ def _await_go(ready_path: Path, go_path: Path) -> None:
         time.sleep(_BARRIER_POLL_SECONDS)
 
 
+def _hold_lock_forever(session_id: str, held_path: Path, seconds: float) -> None:
+    """Take the store's own write lock, announce it, and keep holding it.
+
+    Through ``_locked`` rather than a ``FileLock`` built from a guessed filename:
+    the caller needs to hold *whatever* lock the store uses, so that renaming or
+    re-keying the lock cannot leave this quietly holding an unrelated file.
+
+    The marker is written from inside the locked region, so a parent that sees
+    it knows the lock is held right now — not that it might be soon.
+    """
+    store = JsonlSessionStore()
+    path = session_path(session_id)
+    with store._locked(path):  # noqa: SLF001
+        held_path.write_text(str(os.getpid()), encoding="utf-8")
+        time.sleep(seconds)
+
+
 def main(config: dict[str, Any]) -> int:
     worker_id = str(config["worker_id"])
     session_ids: list[str] = list(config["session_ids"])
@@ -75,6 +93,11 @@ def main(config: dict[str, Any]) -> int:
     store = JsonlSessionStore()
     sessions = {session_id: _session(session_id) for session_id in session_ids}
     body = "x" * text_chars
+
+    hold_seconds = config.get("hold_lock_seconds")
+    if hold_seconds is not None:
+        _hold_lock_forever(session_ids[0], Path(config["held_path"]), float(hold_seconds))
+        return 0
 
     go_path = config.get("go_path")
     if go_path is not None:

@@ -41,12 +41,9 @@ _PROCESS_TIMEOUT_SECONDS = 60.0
 # How long concurrent writers run once released. Long enough that every worker
 # is provably writing while the others are, short enough not to pad the suite.
 _OVERLAP_SECONDS = 1.5
-# The victim of the kill case must still be writing when the signal lands, so it
-# runs on a clock it cannot outrun rather than a turn count it might finish.
+# The victim holds the lock for far longer than the parent needs to kill it,
+# so the kill can never land after it has let go.
 _VICTIM_SECONDS = 30.0
-_KILL_AFTER_SECONDS = 0.75
-# Big enough that a SIGKILL can land inside a single write() and tear the line.
-_TORN_WRITE_CHARS = 512 * 1024
 # The OS frees a dead holder's flock immediately; this is slack, not a wait.
 _LOCK_RECLAIM_SECONDS = 5.0
 # Short on purpose: a writer that should not be contending must fail fast
@@ -154,6 +151,17 @@ def _release(processes: list[subprocess.Popen[bytes]], result_paths: list[Path],
         )
         time.sleep(0.01)
     go.touch()
+
+
+def _await_marker(marker: Path, process: subprocess.Popen[bytes], failure: str) -> None:
+    """Block until ``marker`` appears, failing fast if the process dies first."""
+    deadline = time.monotonic() + _PROCESS_TIMEOUT_SECONDS
+    while not marker.exists():
+        if process.poll() is not None:
+            pytest.fail(f"{failure} (exited {process.returncode})")
+        if time.monotonic() > deadline:
+            pytest.fail(f"{failure} (timed out after {_PROCESS_TIMEOUT_SECONDS}s)")
+        time.sleep(0.01)
 
 
 def _await(processes: list[subprocess.Popen[bytes]]) -> None:
@@ -356,40 +364,41 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     )
 
 
-def test_soak_sigkill_mid_write_strands_no_lock(soak_home: Path) -> None:
-    """Case 3: a hard kill releases the lock rather than stranding it.
+def test_soak_sigkill_while_holding_the_lock_strands_nothing(soak_home: Path) -> None:
+    """Case 3: a hard kill of the lock *holder* leaves the lock takeable.
 
     SIGKILL, not SIGTERM — a clean shutdown releases the lock through Python and
-    proves nothing about what the OS does for a process that never runs its
-    handlers. The claim is asserted directly against the lock, because where the
-    kill lands inside the write is a race and the file's shape is not.
+    proves nothing about a process that never runs its handlers.
+
+    The victim signals from inside the locked region and the parent waits for
+    that signal, because a fixed sleep only proves the process is alive: on a
+    loaded runner it may still be importing, and killing a victim that never
+    took the lock would let this pass while reclaiming nothing.
     """
     session_id = "soak-kill"
     path = _seed(session_id)
+    held_marker = soak_home / "victim.held"
 
     victim = _spawn(
         soak_home,
         {
             "worker_id": "victim",
             "session_ids": [session_id],
-            "duration_seconds": _VICTIM_SECONDS,
-            "text_chars": _TORN_WRITE_CHARS,
+            "hold_lock_seconds": _VICTIM_SECONDS,
+            "held_path": str(held_marker),
             "result_path": str(soak_home / "victim.json"),
         },
     )
-    time.sleep(_KILL_AFTER_SECONDS)
-    assert victim.poll() is None, "victim finished before it could be killed mid-write"
+    _await_marker(held_marker, victim, "victim never acquired the session lock")
+
+    assert victim.poll() is None, "victim exited before it could be killed holding the lock"
     os.kill(victim.pid, signal.SIGKILL)
     victim.wait(timeout=_PROCESS_TIMEOUT_SECONDS)
     assert victim.returncode == -signal.SIGKILL
 
-    # The lock the dead process held must be free: fcntl.flock is released by
-    # the OS on exit, so this fails only if the store has bolted something
-    # durable on top of it.
-    inherited = FileLock(f"{path}.lock", timeout=_LOCK_RECLAIM_SECONDS)
-    inherited.acquire()
-    inherited.release()
-
+    # The product-level claim: a writer that arrives after the holder died gets
+    # the lock and its turns land. A stranded lock turns these into timeouts,
+    # and the short timeout makes that a fast failure rather than a stall.
     size_before_survivor = path.stat().st_size
     survivor_result = soak_home / "survivor.json"
     _await(
@@ -401,6 +410,7 @@ def test_soak_sigkill_mid_write_strands_no_lock(soak_home: Path) -> None:
                     "session_ids": [session_id],
                     "turns": 5,
                     "result_path": str(survivor_result),
+                    "lock_timeout_seconds": _CONTENDED_TIMEOUT_SECONDS,
                 },
             )
         ]
@@ -408,6 +418,11 @@ def test_soak_sigkill_mid_write_strands_no_lock(soak_home: Path) -> None:
 
     _metrics(soak_home).report("sigkill")
     assert path.stat().st_size > size_before_survivor, "the survivor wrote nothing after the kill"
+    survivor = _results([survivor_result])[0]
+    expected = {marker.split("/", 1)[1] for marker in survivor.written}
+    assert expected <= _written_markers(_assert_readable(path)), (
+        "the survivor's turns are missing: the dead holder's lock was not reclaimed"
+    )
 
 
 @pytest.mark.xfail(
