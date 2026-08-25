@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 from filelock import FileLock
 
-from config.constants import OPENSRE_OPERATIONS_LOG_PATH_ENV
+from config.constants import OPENSRE_HOME_ENV, OPENSRE_OPERATIONS_LOG_PATH_ENV
 from config.constants.session_store import OPENSRE_SESSION_FILE_LOCK_ENV
 from core.agent_harness.session.persistence.jsonl_store import JsonlSessionStore
 from core.agent_harness.session.persistence.paths import session_path, sessions_dir
@@ -37,11 +37,14 @@ from infrastructure.observability.operations_log import read_operations
 _WORKER = Path(__file__).with_name("_lock_soak_worker.py")
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# Long enough that every worker is running before any of them writes, short
-# enough not to pad the suite. The different-sessions case depends on it:
-# without a shared start the workers queue up and "overlap" proves nothing.
-_START_BARRIER_SECONDS = 1.0
 _PROCESS_TIMEOUT_SECONDS = 60.0
+# How long concurrent writers run once released. Long enough that every worker
+# is provably writing while the others are, short enough not to pad the suite.
+_OVERLAP_SECONDS = 1.5
+# The victim of the kill case must still be writing when the signal lands, so it
+# runs on a clock it cannot outrun rather than a turn count it might finish.
+_VICTIM_SECONDS = 30.0
+_KILL_AFTER_SECONDS = 0.75
 # Big enough that a SIGKILL can land inside a single write() and tear the line.
 _TORN_WRITE_CHARS = 512 * 1024
 # The OS frees a dead holder's flock immediately; this is slack, not a wait.
@@ -83,7 +86,7 @@ class WorkerResult:
 @pytest.fixture
 def soak_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point session storage and the operations log at a temp home."""
-    monkeypatch.setenv("OPENSRE_HOME", str(tmp_path))
+    monkeypatch.setenv(OPENSRE_HOME_ENV, str(tmp_path))
     monkeypatch.setenv(OPENSRE_SESSION_FILE_LOCK_ENV, "1")
     monkeypatch.setenv(OPENSRE_OPERATIONS_LOG_PATH_ENV, str(tmp_path / "operations.jsonl"))
     from config.constants import paths as paths_constants
@@ -114,7 +117,7 @@ def _seed(session_id: str) -> Path:
 def _worker_env(home: Path) -> dict[str, str]:
     return {
         **os.environ,
-        "OPENSRE_HOME": str(home),
+        OPENSRE_HOME_ENV: str(home),
         OPENSRE_SESSION_FILE_LOCK_ENV: "1",
         OPENSRE_OPERATIONS_LOG_PATH_ENV: str(home / "operations.jsonl"),
         "PYTHONPATH": str(_REPO_ROOT),
@@ -129,6 +132,28 @@ def _spawn(home: Path, config: dict[str, Any]) -> subprocess.Popen[bytes]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def _release(processes: list[subprocess.Popen[bytes]], result_paths: list[Path], go: Path) -> None:
+    """Block until every worker has imported and is waiting, then release them.
+
+    Interpreter startup is ~0.4s idle and unbounded under load, so a wall-clock
+    start time lets a slow worker begin after a fast one has already finished —
+    the overlap the concurrency case asserts would then be a property of the
+    runner, not the lock.
+    """
+    deadline = time.monotonic() + _PROCESS_TIMEOUT_SECONDS
+    ready = [Path(f"{path}.ready") for path in result_paths]
+    while not all(path.exists() for path in ready):
+        if time.monotonic() > deadline:
+            pytest.fail(
+                f"workers never signalled ready: {[p.name for p in ready if not p.exists()]}"
+            )
+        assert all(process.poll() is None for process in processes), (
+            "a worker exited before the barrier"
+        )
+        time.sleep(0.01)
+    go.touch()
 
 
 def _await(processes: list[subprocess.Popen[bytes]]) -> None:
@@ -213,7 +238,7 @@ def test_soak_same_session_writers_serialize_without_loss(soak_home: Path) -> No
     """Case 1: concurrent writers to one session lose no turn and tear no line."""
     session_id = "soak-same"
     path = _seed(session_id)
-    start_at = time.time() + _START_BARRIER_SECONDS
+    go = soak_home / "go-same"
 
     result_paths = [soak_home / f"result-{i}.json" for i in range(4)]
     processes = [
@@ -224,11 +249,12 @@ def test_soak_same_session_writers_serialize_without_loss(soak_home: Path) -> No
                 "session_ids": [session_id],
                 "turns": 25,
                 "result_path": str(result_paths[i]),
-                "start_at": start_at,
+                "go_path": str(go),
             },
         )
         for i in range(4)
     ]
+    _release(processes, result_paths, go)
     _await(processes)
 
     records = _assert_readable(path)
@@ -249,22 +275,26 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     """
     session_ids = [f"soak-diff-{i}" for i in range(4)]
     paths = [_seed(session_id) for session_id in session_ids]
-    start_at = time.time() + _START_BARRIER_SECONDS
+    go = soak_home / "go-diff"
 
     result_paths = [soak_home / f"result-{i}.json" for i in range(len(session_ids))]
+    # A fixed duration rather than a turn count: released together and stopped
+    # by the same clock, the writers provably overlap instead of overlapping
+    # only when the runner happens to schedule them that way.
     processes = [
         _spawn(
             soak_home,
             {
                 "worker_id": f"w{i}",
                 "session_ids": [session_id],
-                "turns": 40,
+                "duration_seconds": _OVERLAP_SECONDS,
                 "result_path": str(result_paths[i]),
-                "start_at": start_at,
+                "go_path": str(go),
             },
         )
         for i, session_id in enumerate(session_ids)
     ]
+    _release(processes, result_paths, go)
     _await(processes)
 
     for path in paths:
@@ -309,7 +339,6 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
                         "session_ids": [session_ids[1]],
                         "turns": 3,
                         "result_path": str(blocked_result),
-                        "start_at": 0.0,
                         "lock_timeout_seconds": _CONTENDED_TIMEOUT_SECONDS,
                     },
                 )
@@ -343,13 +372,12 @@ def test_soak_sigkill_mid_write_strands_no_lock(soak_home: Path) -> None:
         {
             "worker_id": "victim",
             "session_ids": [session_id],
-            "turns": 400,
+            "duration_seconds": _VICTIM_SECONDS,
             "text_chars": _TORN_WRITE_CHARS,
             "result_path": str(soak_home / "victim.json"),
-            "start_at": 0.0,
         },
     )
-    time.sleep(0.75)
+    time.sleep(_KILL_AFTER_SECONDS)
     assert victim.poll() is None, "victim finished before it could be killed mid-write"
     os.kill(victim.pid, signal.SIGKILL)
     victim.wait(timeout=_PROCESS_TIMEOUT_SECONDS)
@@ -373,7 +401,6 @@ def test_soak_sigkill_mid_write_strands_no_lock(soak_home: Path) -> None:
                     "session_ids": [session_id],
                     "turns": 5,
                     "result_path": str(survivor_result),
-                    "start_at": 0.0,
                 },
             )
         ]
@@ -442,7 +469,6 @@ def test_soak_lock_timeout_fails_cleanly_without_partial_append(soak_home: Path)
                         "session_ids": [session_id],
                         "turns": 3,
                         "result_path": str(soak_home / "blocked.json"),
-                        "start_at": 0.0,
                         "lock_timeout_seconds": 0.3,
                     },
                 )

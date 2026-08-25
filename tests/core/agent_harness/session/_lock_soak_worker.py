@@ -27,6 +27,9 @@ if str(_REPO_ROOT) not in sys.path:
 from core.agent_harness.session.persistence import jsonl_store  # noqa: E402
 from core.agent_harness.session.persistence.jsonl_store import JsonlSessionStore  # noqa: E402
 
+_BARRIER_POLL_SECONDS = 0.01
+_BARRIER_TIMEOUT_SECONDS = 120.0
+
 
 def _session(session_id: str) -> Any:
     """Minimal stand-in for the persistence source the store reads."""
@@ -38,19 +41,32 @@ def _session(session_id: str) -> Any:
     )
 
 
-def _wait_until(start_at: float) -> None:
-    """Block until ``start_at`` so sibling workers contend instead of queueing."""
-    delay = start_at - time.time()
-    if delay > 0:
-        time.sleep(delay)
+def _await_go(ready_path: Path, go_path: Path) -> None:
+    """Announce readiness, then block until the parent releases every worker.
+
+    A wall-clock start time cannot do this job: interpreter startup is hundreds
+    of milliseconds and unbounded on a loaded runner, so a worker can miss a
+    fixed deadline and begin after a sibling has already finished. Signalling
+    after the imports are paid makes the release order independent of load.
+    """
+    ready_path.write_text(str(os.getpid()), encoding="utf-8")
+    deadline = time.monotonic() + _BARRIER_TIMEOUT_SECONDS
+    while not go_path.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"barrier {go_path} never opened")
+        time.sleep(_BARRIER_POLL_SECONDS)
 
 
 def main(config: dict[str, Any]) -> int:
     worker_id = str(config["worker_id"])
     session_ids: list[str] = list(config["session_ids"])
-    turns = int(config["turns"])
     text_chars = int(config.get("text_chars", 32))
     result_path = Path(config["result_path"])
+
+    # Exactly one of the two is set: ``turns`` for a bounded run, ``duration``
+    # when the run must still be going when something else happens to it.
+    turns = config.get("turns")
+    duration_seconds = config.get("duration_seconds")
 
     timeout_seconds = config.get("lock_timeout_seconds")
     if timeout_seconds is not None:
@@ -60,15 +76,24 @@ def main(config: dict[str, Any]) -> int:
     sessions = {session_id: _session(session_id) for session_id in session_ids}
     body = "x" * text_chars
 
-    _wait_until(float(config.get("start_at", 0.0)))
+    go_path = config.get("go_path")
+    if go_path is not None:
+        _await_go(Path(f"{result_path}.ready"), Path(go_path))
 
     written: list[str] = []
     first_write = time.time()
-    for index in range(turns):
+    deadline = time.monotonic() + float(duration_seconds) if duration_seconds else None
+    index = 0
+    while True:
+        if deadline is None and index >= int(turns or 0):
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         session_id = session_ids[index % len(session_ids)]
         marker = f"{worker_id}-{index}"
         store.append_turn(sessions[session_id], "chat", f"{marker}:{body}")
         written.append(f"{session_id}/{marker}")
+        index += 1
     last_write = time.time()
 
     result_path.write_text(
