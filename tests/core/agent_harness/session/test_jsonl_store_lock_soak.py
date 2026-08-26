@@ -13,6 +13,7 @@ while the lock is young.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -20,6 +21,7 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +40,7 @@ _WORKER = Path(__file__).with_name("_lock_soak_worker.py")
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _PROCESS_TIMEOUT_SECONDS = 60.0
+_REAP_TIMEOUT_SECONDS = 10.0
 # How long released writers contend once all of them are writing. Bounds the
 # soak; it never bounds correctness, because the parent ends the run.
 _SOAK_SECONDS = 1.0
@@ -121,14 +124,38 @@ def _worker_env(home: Path) -> dict[str, str]:
     }
 
 
-def _spawn(home: Path, config: dict[str, Any]) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [sys.executable, str(_WORKER), json.dumps(config)],
-        cwd=str(_REPO_ROOT),
-        env=_worker_env(home),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+@pytest.fixture
+def spawn(soak_home: Path) -> Iterator[Callable[[dict[str, Any]], subprocess.Popen[bytes]]]:
+    """Spawn workers, and kill any that outlive the test.
+
+    Teardown rather than the test body, because a worker in stop-file mode
+    waits for a marker the parent may never write: any failure between spawn
+    and the stop signal — a failed handshake, an assertion, a KeyboardInterrupt
+    — would otherwise leave it appending turns forever on the CI runner.
+    """
+    started: list[subprocess.Popen[bytes]] = []
+
+    def _spawn(config: dict[str, Any]) -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(
+            [sys.executable, str(_WORKER), json.dumps(config)],
+            cwd=str(_REPO_ROOT),
+            env=_worker_env(soak_home),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        started.append(process)
+        return process
+
+    try:
+        yield _spawn
+    finally:
+        for process in started:
+            if process.poll() is None:
+                process.kill()
+            # Always drain: the pipes are still open on a killed worker, and an
+            # unread PIPE is a file descriptor this process keeps.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.communicate(timeout=_REAP_TIMEOUT_SECONDS)
 
 
 def _await_all(processes: list[subprocess.Popen[bytes]], markers: list[Path], what: str) -> None:
@@ -259,7 +286,9 @@ def _written_markers(records: list[dict[str, Any]]) -> set[str]:
     }
 
 
-def test_soak_same_session_writers_serialize_without_loss(soak_home: Path) -> None:
+def test_soak_same_session_writers_serialize_without_loss(
+    soak_home: Path, spawn: Callable[[dict[str, Any]], subprocess.Popen[bytes]]
+) -> None:
     """Case 1: concurrent writers to one session lose no turn and tear no line."""
     session_id = "soak-same"
     path = _seed(session_id)
@@ -267,8 +296,7 @@ def test_soak_same_session_writers_serialize_without_loss(soak_home: Path) -> No
 
     result_paths = [soak_home / f"result-{i}.json" for i in range(4)]
     processes = [
-        _spawn(
-            soak_home,
+        spawn(
             {
                 "worker_id": f"w{i}",
                 "session_ids": [session_id],
@@ -291,7 +319,9 @@ def test_soak_same_session_writers_serialize_without_loss(soak_home: Path) -> No
     assert not missing, f"{len(missing)} turns reported written but absent from the file: {missing}"
 
 
-def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
+def test_soak_different_sessions_write_concurrently(
+    soak_home: Path, spawn: Callable[[dict[str, Any]], subprocess.Popen[bytes]]
+) -> None:
     """Case 2: a per-path lock must not serialize unrelated sessions.
 
     The overlap is asserted, not assumed: a global lock would still produce a
@@ -308,8 +338,7 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     # held open until all of them have written: the overlap the case asserts is
     # then guaranteed by construction rather than by the scheduler.
     processes = [
-        _spawn(
-            soak_home,
+        spawn(
             {
                 "worker_id": f"w{i}",
                 "session_ids": [session_id],
@@ -358,8 +387,7 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     try:
         _await(
             [
-                _spawn(
-                    soak_home,
+                spawn(
                     {
                         "worker_id": "unrelated",
                         "session_ids": [session_ids[1]],
@@ -382,7 +410,9 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     )
 
 
-def test_soak_sigkill_while_holding_the_lock_strands_nothing(soak_home: Path) -> None:
+def test_soak_sigkill_while_holding_the_lock_strands_nothing(
+    soak_home: Path, spawn: Callable[[dict[str, Any]], subprocess.Popen[bytes]]
+) -> None:
     """Case 3: a hard kill of the lock *holder* leaves the lock takeable.
 
     SIGKILL, not SIGTERM — a clean shutdown releases the lock through Python and
@@ -397,8 +427,7 @@ def test_soak_sigkill_while_holding_the_lock_strands_nothing(soak_home: Path) ->
     path = _seed(session_id)
     held_marker = soak_home / "victim.held"
 
-    victim = _spawn(
-        soak_home,
+    victim = spawn(
         {
             "worker_id": "victim",
             "session_ids": [session_id],
@@ -421,8 +450,7 @@ def test_soak_sigkill_while_holding_the_lock_strands_nothing(soak_home: Path) ->
     survivor_result = soak_home / "survivor.json"
     _await(
         [
-            _spawn(
-                soak_home,
+            spawn(
                 {
                     "worker_id": "survivor",
                     "session_ids": [session_id],
@@ -479,7 +507,9 @@ def test_soak_write_after_a_torn_tail_is_not_swallowed(soak_home: Path) -> None:
     )
 
 
-def test_soak_lock_timeout_fails_cleanly_without_partial_append(soak_home: Path) -> None:
+def test_soak_lock_timeout_fails_cleanly_without_partial_append(
+    soak_home: Path, spawn: Callable[[dict[str, Any]], subprocess.Popen[bytes]]
+) -> None:
     """Case 4: a write that cannot take the lock appends nothing at all.
 
     The write being *dropped* rather than retried or surfaced is #5475; this
@@ -495,8 +525,7 @@ def test_soak_lock_timeout_fails_cleanly_without_partial_append(soak_home: Path)
     try:
         _await(
             [
-                _spawn(
-                    soak_home,
+                spawn(
                     {
                         "worker_id": "blocked",
                         "session_ids": [session_id],

@@ -30,6 +30,10 @@ from core.agent_harness.session.persistence.paths import session_path  # noqa: E
 
 _BARRIER_POLL_SECONDS = 0.01
 _BARRIER_TIMEOUT_SECONDS = 120.0
+# A stop marker the parent never writes must not mean an immortal writer: the
+# fixture kills survivors, but a parent that was itself killed cannot, and this
+# loop appends to disk on every pass.
+_MAX_RUN_SECONDS = 120.0
 
 
 def _session(session_id: str) -> Any:
@@ -72,7 +76,9 @@ def _hold_lock_forever(session_id: str, held_path: Path, seconds: float) -> None
     path = session_path(session_id)
     with store._locked(path):  # noqa: SLF001
         held_path.write_text(str(os.getpid()), encoding="utf-8")
-        time.sleep(seconds)
+        # Bounded: this process is meant to be killed, but a parent that dies
+        # first must not leave it holding the lock indefinitely.
+        time.sleep(min(seconds, _MAX_RUN_SECONDS))
 
 
 def main(config: dict[str, Any]) -> int:
@@ -111,12 +117,15 @@ def main(config: dict[str, Any]) -> int:
 
     written: list[str] = []
     first_write = time.time()
+    give_up_at = time.monotonic() + _MAX_RUN_SECONDS
     index = 0
     while True:
         if stop_path is None and index >= int(turns or 0):
             break
         if stop_path is not None and index > 0 and stop_path.exists():
             break
+        if time.monotonic() > give_up_at:
+            raise TimeoutError(f"no stop signal after {_MAX_RUN_SECONDS}s")
         session_id = session_ids[index % len(session_ids)]
         marker = f"{worker_id}-{index}"
         store.append_turn(sessions[session_id], "chat", f"{marker}:{body}")
