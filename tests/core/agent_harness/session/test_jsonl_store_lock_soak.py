@@ -38,9 +38,9 @@ _WORKER = Path(__file__).with_name("_lock_soak_worker.py")
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _PROCESS_TIMEOUT_SECONDS = 60.0
-# How long concurrent writers run once released. Long enough that every worker
-# is provably writing while the others are, short enough not to pad the suite.
-_OVERLAP_SECONDS = 1.5
+# How long released writers contend once all of them are writing. Bounds the
+# soak; it never bounds correctness, because the parent ends the run.
+_SOAK_SECONDS = 1.0
 # The victim holds the lock for far longer than the parent needs to kill it,
 # so the kill can never land after it has let go.
 _VICTIM_SECONDS = 30.0
@@ -131,26 +131,43 @@ def _spawn(home: Path, config: dict[str, Any]) -> subprocess.Popen[bytes]:
     )
 
 
-def _release(processes: list[subprocess.Popen[bytes]], result_paths: list[Path], go: Path) -> None:
-    """Block until every worker has imported and is waiting, then release them.
-
-    Interpreter startup is ~0.4s idle and unbounded under load, so a wall-clock
-    start time lets a slow worker begin after a fast one has already finished —
-    the overlap the concurrency case asserts would then be a property of the
-    runner, not the lock.
-    """
+def _await_all(processes: list[subprocess.Popen[bytes]], markers: list[Path], what: str) -> None:
+    """Block until every marker exists, failing fast if a worker dies first."""
     deadline = time.monotonic() + _PROCESS_TIMEOUT_SECONDS
-    ready = [Path(f"{path}.ready") for path in result_paths]
-    while not all(path.exists() for path in ready):
+    while not all(marker.exists() for marker in markers):
         if time.monotonic() > deadline:
-            pytest.fail(
-                f"workers never signalled ready: {[p.name for p in ready if not p.exists()]}"
-            )
+            missing = [marker.name for marker in markers if not marker.exists()]
+            pytest.fail(f"workers did not {what}: {missing}")
         assert all(process.poll() is None for process in processes), (
-            "a worker exited before the barrier"
+            f"a worker exited before it could {what}"
         )
         time.sleep(0.01)
+
+
+def _release(
+    processes: list[subprocess.Popen[bytes]],
+    result_paths: list[Path],
+    go: Path,
+    stop: Path | None = None,
+) -> None:
+    """Run every worker concurrently, then stop them all at the same instant.
+
+    Neither end of the window is left to the scheduler. Startup is ~0.4s idle
+    and unbounded under load, so workers are released together rather than at a
+    wall-clock time; and each one is held open until *every* worker has a turn
+    on disk, so a starved worker cannot measure its window after its siblings
+    have already exited. Overlap is then structural, not a property of the
+    runner.
+    """
+    _await_all(processes, [Path(f"{path}.ready") for path in result_paths], "signal ready")
     go.touch()
+    if stop is None:
+        return
+    _await_all(processes, [Path(f"{path}.writing") for path in result_paths], "write a first turn")
+    # Every worker is now provably writing. Let them contend for a while before
+    # calling stop, so the run is a soak and not just a handshake.
+    time.sleep(_SOAK_SECONDS)
+    stop.touch()
 
 
 def _await_marker(marker: Path, process: subprocess.Popen[bytes], failure: str) -> None:
@@ -284,25 +301,26 @@ def test_soak_different_sessions_write_concurrently(soak_home: Path) -> None:
     session_ids = [f"soak-diff-{i}" for i in range(4)]
     paths = [_seed(session_id) for session_id in session_ids]
     go = soak_home / "go-diff"
+    stop = soak_home / "stop-diff"
 
     result_paths = [soak_home / f"result-{i}.json" for i in range(len(session_ids))]
-    # A fixed duration rather than a turn count: released together and stopped
-    # by the same clock, the writers provably overlap instead of overlapping
-    # only when the runner happens to schedule them that way.
+    # Released together and stopped together by the parent, with every worker
+    # held open until all of them have written: the overlap the case asserts is
+    # then guaranteed by construction rather than by the scheduler.
     processes = [
         _spawn(
             soak_home,
             {
                 "worker_id": f"w{i}",
                 "session_ids": [session_id],
-                "duration_seconds": _OVERLAP_SECONDS,
+                "stop_path": str(stop),
                 "result_path": str(result_paths[i]),
                 "go_path": str(go),
             },
         )
         for i, session_id in enumerate(session_ids)
     ]
-    _release(processes, result_paths, go)
+    _release(processes, result_paths, go, stop)
     _await(processes)
 
     for path in paths:

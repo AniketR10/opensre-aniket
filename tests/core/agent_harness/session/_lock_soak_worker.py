@@ -81,10 +81,9 @@ def main(config: dict[str, Any]) -> int:
     text_chars = int(config.get("text_chars", 32))
     result_path = Path(config["result_path"])
 
-    # Exactly one of the two is set: ``turns`` for a bounded run, ``duration``
-    # when the run must still be going when something else happens to it.
+    # Exactly one of the two is set: ``turns`` for a bounded run, ``stop_path``
+    # when the parent decides when everyone stops.
     turns = config.get("turns")
-    duration_seconds = config.get("duration_seconds")
 
     timeout_seconds = config.get("lock_timeout_seconds")
     if timeout_seconds is not None:
@@ -103,20 +102,31 @@ def main(config: dict[str, Any]) -> int:
     if go_path is not None:
         _await_go(Path(f"{result_path}.ready"), Path(go_path))
 
+    # ``stop_path`` mode writes until the parent says stop, rather than for a
+    # duration this process times itself. A worker the scheduler starves would
+    # otherwise measure its own window entirely after its siblings had finished,
+    # and the overlap assertion would fail on a correct lock.
+    stop_path = Path(config["stop_path"]) if config.get("stop_path") else None
+    writing_path = Path(f"{result_path}.writing")
+
     written: list[str] = []
     first_write = time.time()
-    deadline = time.monotonic() + float(duration_seconds) if duration_seconds else None
     index = 0
     while True:
-        if deadline is None and index >= int(turns or 0):
+        if stop_path is None and index >= int(turns or 0):
             break
-        if deadline is not None and time.monotonic() >= deadline:
+        if stop_path is not None and index > 0 and stop_path.exists():
             break
         session_id = session_ids[index % len(session_ids)]
         marker = f"{worker_id}-{index}"
         store.append_turn(sessions[session_id], "chat", f"{marker}:{body}")
         written.append(f"{session_id}/{marker}")
         index += 1
+        if index == 1:
+            # Announced only after a turn is on disk: the parent holds every
+            # worker open until all of them have written, so each one's interval
+            # provably contains the moment the last of them started.
+            writing_path.write_text(str(os.getpid()), encoding="utf-8")
     last_write = time.time()
 
     result_path.write_text(
