@@ -38,8 +38,8 @@ def _check_env_file() -> tuple[bool, str]:
 
 
 def _check_llm_provider() -> tuple[bool, str]:
-    from config.config import get_configured_llm_provider
     from config.llm_auth.credentials import status as credential_status
+    from config.llm_settings import get_configured_llm_provider
 
     provider = get_configured_llm_provider()
     auth = credential_status(provider)

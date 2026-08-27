@@ -49,8 +49,8 @@ def _cmd_exit(session: Session, console: Console, _args: list[str]) -> bool:
 
 
 def _cmd_health(_session: Session, console: Console, _args: list[str]) -> bool:
-    from config.config import get_environment
     from config.constants.paths import integrations_store_path
+    from config.environment import get_environment
     from integrations.verify import verify_integrations
     from surfaces.shared.terminal.health import render_health_report
 
