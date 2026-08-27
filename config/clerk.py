@@ -5,13 +5,12 @@ These are public endpoints and issuer URLs, not secrets.
 
 import os
 
+from config.constants.clerk import CLERK_ISSUER_ENV, CLERK_JWKS_URL_ENV
 from config.strict_config import StrictConfigModel
 
 __all__ = (
     "CLERK_CONFIG_DEV",
     "CLERK_CONFIG_PROD",
-    "CLERK_ISSUER_ENV",
-    "CLERK_JWKS_URL_ENV",
     "ClerkConfig",
     "JWKS_CACHE_TTL_SECONDS",
     "JWT_ALGORITHM",
@@ -35,11 +34,6 @@ CLERK_CONFIG_PROD = ClerkConfig(
     jwks_url="https://clerk.tracer.cloud/.well-known/jwks.json",
     issuer="https://clerk.tracer.cloud",
 )
-
-# Env vars injected by the org-silo infra (ECS task definition) to point JWT
-# verification at the silo's own Clerk instance instead of the defaults above.
-CLERK_ISSUER_ENV = "CLERK_ISSUER"
-CLERK_JWKS_URL_ENV = "CLERK_JWKS_URL"
 
 # JWT Configuration
 JWT_ALGORITHM = "RS256"

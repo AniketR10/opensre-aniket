@@ -60,6 +60,7 @@ from config.constants.buzz import (
     BUZZ_PRIVATE_KEY_ENV,
     BUZZ_RELAY_URL_ENV,
 )
+from config.constants.clerk import CLERK_ISSUER_ENV, CLERK_JWKS_URL_ENV
 from config.constants.coralogix import (
     CORALOGIX_API_KEY_ENV,
     CORALOGIX_APPLICATION_NAME_ENV,
@@ -481,6 +482,8 @@ __all__ = [
     "BUZZ_PATH_ENV",
     "BUZZ_PRIVATE_KEY_ENV",
     "BUZZ_RELAY_URL_ENV",
+    "CLERK_ISSUER_ENV",
+    "CLERK_JWKS_URL_ENV",
     "ATTACHMENT_MAX_FILE_CHARS",
     "ATTACHMENT_MAX_TOTAL_CHARS",
     "CREDITS_DENIED_MESSAGE",
