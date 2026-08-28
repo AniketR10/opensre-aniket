@@ -224,8 +224,11 @@ INVESTIGATION_DISPATCH_TOOL_NAMES: frozenset[str] = frozenset(
 )
 # Tools whose user-facing event is owned by the host UI, so the end-of-turn
 # generic formatter must stay silent: repeating their summary would double-print,
-# and their payload (e.g. the full skill body) is for the model only.
-_HOST_RENDERED_TOOL_NAMES: frozenset[str] = frozenset({"ask_user_choice", "skill_view"})
+# and their payload (e.g. the full skill body) is for the model only. update_plan
+# renders as the pinned plan overlay, so its summary must not also print as text.
+_HOST_RENDERED_TOOL_NAMES: frozenset[str] = frozenset(
+    {"ask_user_choice", "skill_view", "update_plan"}
+)
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,66 @@ def _generic_tool_results(result: Any) -> list[tuple[ToolCall, Any]]:
     ]
 
 
+_DISPLAY_OUTPUT_MAX_LINES = 12
+_DISPLAY_OUTPUT_MAX_CHARS = 800
+_OUTPUT_TRUNCATED_MARKER = "… (output truncated)"
+
+
+_PLAN_SNAPSHOT_RE = re.compile(r"Plan\s*[·.]\s*\d+\s*/\s*\d+(?:\s*[✓●○][^✓●○\n]*)*")
+
+
+def _strip_plan_snapshots(text: str) -> str:
+    """Remove ``Plan · n/m`` checklist snapshots the model restates in its reply.
+
+    The plan lives in the pinned overlay, so echoing it — let alone every
+    historical step-completion state — is a redundant wall. Prose (``-``/``•``
+    bullets, sentences) is untouched."""
+    if "Plan" not in text:
+        return text
+    cleaned = _PLAN_SNAPSHOT_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _looks_like_json(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return False
+    try:
+        json.loads(stripped)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _cap_for_display(text: str) -> str:
+    """Cap verbose tool output for the console so a large result cannot flood the
+    transcript. The model and persisted history keep the full text; only the
+    user-facing preview is truncated."""
+    if not text:
+        return text
+    lines = text.splitlines()
+    capped = "\n".join(lines[:_DISPLAY_OUTPUT_MAX_LINES])
+    truncated = len(lines) > _DISPLAY_OUTPUT_MAX_LINES
+    if len(capped) > _DISPLAY_OUTPUT_MAX_CHARS:
+        capped = capped[:_DISPLAY_OUTPUT_MAX_CHARS].rstrip()
+        truncated = True
+    return f"{capped}\n{_OUTPUT_TRUNCATED_MARKER}" if truncated else capped
+
+
+def _visible_stdout(stdout: str) -> str:
+    """Plain-text stdout is shown as-is; a JSON payload (e.g. a ``gh api``
+    response) is pretty-printed so it reads as formatted data, not a one-line
+    blob. Capping and fenced-block styling happen later, at display time."""
+    stripped = stdout.strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(stripped)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return stripped
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
+
+
 def _format_generic_tool_payload(tool_call: ToolCall, tool_result: Any) -> str:
     """Build a user-visible summary for one non-self-recording tool result."""
     if tool_call.name in _HOST_RENDERED_TOOL_NAMES and not getattr(tool_result, "is_error", False):
@@ -348,7 +411,7 @@ def _format_generic_tool_payload(tool_call: ToolCall, tool_result: Any) -> str:
             return summary.strip()
         stdout = details.get("stdout")
         if details.get("ok") and isinstance(stdout, str) and stdout.strip():
-            return stdout.strip()
+            return _visible_stdout(stdout)
         error = details.get("error")
         if error:
             return str(error).strip()
@@ -370,15 +433,15 @@ def _format_generic_tool_payload(tool_call: ToolCall, tool_result: Any) -> str:
         if isinstance(summary, str) and summary.strip():
             return summary.strip()
         if parsed.get("ok") and isinstance(parsed.get("stdout"), str) and parsed["stdout"].strip():
-            return str(parsed["stdout"]).strip()
+            return _visible_stdout(str(parsed["stdout"]))
         if parsed.get("error"):
             return str(parsed["error"]).strip()
-    args = public_tool_input(tool_call.input)
-    if args:
-        return (
-            f"{tool_call.name} input: {json.dumps(args, ensure_ascii=False, default=str)}"
-            f"\n{tool_call.name} result: {content}"
-        )
+    if parsed is not None:
+        # An opaque JSON payload (a dict with no user-facing field, or a list):
+        # pretty-print it so raw data reads as formatted JSON rather than a
+        # one-line blob. Capping and fenced-block styling happen at display time.
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    # Non-JSON content is the tool's real text output; show it under the name.
     return f"{tool_call.name} result: {content}"
 
 
@@ -881,12 +944,24 @@ def _compose_response(
         )
     )
     final_text_chunk = "" if suppress_final else final_text
-    display_final = final_text_chunk
+    # The model sometimes restates the plan (or every historical snapshot) in its
+    # reply; the pinned overlay already shows it, so strip snapshots from display.
+    display_final = _strip_plan_snapshots(final_text_chunk)
     # History entries are already rendered by self-recording tools (shell/slash/…).
     # Console display uses final_text + generic results + hints only so users see
     # github_cli / other registry tools without double-printing shell output.
     # response_text still includes history for persistence / non-TTY surfaces.
-    display_chunks = [chunk for chunk in (display_final, generic_text, hint) if chunk]
+    display_generic = _cap_for_display(generic_text)
+    is_json = _looks_like_json(generic_text)
+    bulky = display_generic.count("\n") >= 4 or display_generic.endswith(_OUTPUT_TRUNCATED_MARKER)
+    if display_generic and (is_json or bulky):
+        # Bulky or JSON tool output reads as code: put it in its own fenced block
+        # below a blank line so it never blends with the report prose above it.
+        # JSON gets a ``json`` fence for syntax highlighting. Short summaries stay
+        # inline.
+        lang = "json" if is_json else "text"
+        display_generic = f"\n```{lang}\n{display_generic}\n```"
+    display_chunks = [chunk for chunk in (display_final, display_generic, hint) if chunk]
     response_chunks = [
         chunk
         for chunk in (

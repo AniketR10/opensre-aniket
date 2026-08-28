@@ -1,12 +1,14 @@
 """Deployment environment selection.
 
-A leaf with no ``config`` imports: anything that varies by environment (Clerk
-instance, Tracer base URL, Sentry environment tag) reads it from here without
-pulling in the subject it belongs to.
+Anything that varies by environment (Clerk instance, Tracer base URL, Sentry
+environment tag) reads it from here without pulling in the subject it belongs
+to.
 """
 
 import os
 from enum import StrEnum
+
+from config.constants.environment import DEPLOYMENT_ENV_ENV
 
 __all__ = (
     "Environment",
@@ -28,7 +30,7 @@ def get_environment() -> Environment:
         Environment enum value based on ENV variable.
         Defaults to DEVELOPMENT if not set or unrecognized.
     """
-    env_value = os.getenv("ENV", "development").lower()
+    env_value = os.getenv(DEPLOYMENT_ENV_ENV, "development").lower()
     if env_value in ("production", "prod"):
         return Environment.PRODUCTION
     return Environment.DEVELOPMENT

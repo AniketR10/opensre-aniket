@@ -417,3 +417,47 @@ def test_selected_choice_keeps_meaningful_follow_up_response() -> None:
     shown = "\n".join(display_chunks)
     assert "Blue-green avoids routing" in shown
     assert session.terminal.pending_choice_response is None
+
+
+def test_bulky_tool_output_is_capped_and_fenced_for_display() -> None:
+    # A large tool result must not flood the transcript or blend into the report:
+    # it is capped and shown in its own fenced code block for the console.
+    github = ToolCall(id="1", name="github_cli", input={"command": "run list"})
+    bulky = "\n".join(f"run {i} failure 2026-08-01T09:11:00Z" for i in range(30))
+    result = _Result(
+        tool_results=[(github, _ToolResult(_payload(bulky)))],
+        final_text="Here is the run history.",
+    )
+
+    response_text, display_chunks, _use_final = _compose_response(result, _Session(), _counts(1))
+    joined = "\n".join(display_chunks)
+
+    # Display: capped + fenced. Model/history: full, unfenced.
+    assert "```text" in joined
+    assert "… (output truncated)" in joined
+    assert joined.count("run ") <= 12
+    assert "```text" not in response_text
+    assert response_text.count("run ") == 30
+
+
+def test_plan_snapshots_are_stripped_from_the_reply() -> None:
+    # The model sometimes restates the plan (or every historical snapshot) in its
+    # closing text; the overlay already shows it, so display strips the snapshots
+    # while keeping the prose verification.
+    reply = (
+        "All 12 local actions completed successfully.\n\n"
+        "- Repository: /Users/x/opensre\n"
+        "- Branch: perf/checks\n\n"
+        "Plan · 1/7\n  ✓ Inspect path\n  ● Show branch\n  ○ Read commit\n"
+        "Plan · 7/7\n  ✓ Inspect path\n  ✓ Confirm all actions succeeded (verify)"
+    )
+    result = _Result(tool_results=[], final_text=reply)
+
+    _rt, display_chunks, use_final = _compose_response(result, _Session(), _counts(0))
+    shown = "\n".join(display_chunks)
+
+    assert use_final is True
+    assert "All 12 local actions completed successfully." in shown
+    assert "Repository: /Users/x/opensre" in shown
+    assert "Plan ·" not in shown
+    assert "✓ Inspect path" not in shown

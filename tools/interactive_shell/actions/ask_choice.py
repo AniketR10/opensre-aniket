@@ -38,9 +38,10 @@ _CHOOSE_COMMAND = "/choose"
 _DEFAULT_HEADER = "Ask User"
 
 _FALLBACK_INSTRUCTION = (
-    "No interactive selection menu is available on this surface. Present the "
-    "options as a short numbered list instead and ask the user to reply with "
-    "the number or the option text."
+    "No interactive selection menu is available on this surface. If the choice "
+    "is required for work to continue, present a short numbered list and ask "
+    "the user to reply. If this was only an optional follow-up, do NOT park a "
+    "numbered question — finish with one sentence of instructions."
 )
 _QUEUED_INSTRUCTION = (
     "The selection menu opens after this turn ends. End the turn now without a "
@@ -244,9 +245,10 @@ ask_user_choice_tool = RegisteredTool(
             "fixed set of actions (e.g. stash vs commit vs worktree)"
         ),
         (
-            "Investigation or triage is blocked on several facts the user "
-            "must supply (where a service lives, how to get metrics, the "
-            "time window) — one questions payload, then plan"
+            "Triage is blocked on several facts the user must supply (where a "
+            "service lives, how to get metrics, the time window) and there is "
+            "no investigate/RCA verb with a concrete alert payload yet — one "
+            "questions payload, then plan"
         ),
         "A skill instructs presenting a structured choice / dropdown to the user",
     ],
@@ -254,8 +256,13 @@ ask_user_choice_tool = RegisteredTool(
         "Open-ended questions with no fixed option set (ask in plain text)",
         "Yes/no confirmations already covered by the execution confirmation flow",
         "Presenting information that requires no decision",
+        "Optional end-of-turn follow-up on a headless, scheduled, gateway, or /goal turn",
         "One ask_user_choice call per question when several facts block the same job",
         "Calling update_plan before the Ask User answers arrive",
+        (
+            "Explicit investigate/RCA/diagnose with pasted alert JSON or quoted "
+            "payload — call investigation_start instead of Ask User"
+        ),
     ],
     input_schema=object_schema(
         properties={
