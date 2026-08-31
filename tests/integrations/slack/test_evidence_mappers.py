@@ -33,6 +33,7 @@ class TestSlackReadMessagesMapper:
                 {"user": "U2", "ts": "2.0", "text": "errors spiking"},
             ],
             "message_count": 2,
+            "truncated": False,
         }
 
         # Act
@@ -48,6 +49,26 @@ class TestSlackReadMessagesMapper:
                 "snippet": None,
             }
         ]
+
+    def test_marks_a_page_capped_read_as_truncated(self) -> None:
+        """A full page is a floor, not a total — citing it as exact would mislead."""
+        # Arrange
+        evidence: dict[str, Any] = {}
+        output = {
+            "status": "read",
+            "channel_id": "C0INCIDENT",
+            "messages": [{"text": f"m{i}"} for i in range(50)],
+            "message_count": 50,
+            "truncated": True,
+        }
+
+        # Act
+        _map_slack_read_messages(evidence, output, {"channel_id": "C0INCIDENT", "limit": 50})
+
+        # Assert
+        assert (
+            evidence["catalog_entries"][0]["summary"] == "50 messages from C0INCIDENT (truncated)"
+        )
 
     @pytest.mark.parametrize(
         "output",
@@ -98,6 +119,7 @@ class TestSlackSearchMessagesMapper:
                 {"channel_id": "C2", "user": "U2", "ts": "2.0", "text": "timeout again"},
             ],
             "match_count": 2,
+            "truncated": False,
         }
 
         # Act
@@ -113,6 +135,23 @@ class TestSlackSearchMessagesMapper:
                 "snippet": None,
             }
         ]
+
+    def test_marks_a_count_capped_search_as_truncated(self) -> None:
+        """search.messages returns one page, so a full page may hide more hits."""
+        # Arrange
+        evidence: dict[str, Any] = {}
+        output = {
+            "status": "read",
+            "matches": [{"text": f"hit {i}"} for i in range(20)],
+            "match_count": 20,
+            "truncated": True,
+        }
+
+        # Act
+        _map_slack_search_messages(evidence, output, {"query": "timeout"})
+
+        # Assert
+        assert evidence["catalog_entries"][0]["summary"] == "20 matches for 'timeout' (truncated)"
 
     def test_caps_the_query_echoed_into_the_summary(self) -> None:
         """The entry is re-read every turn, so a pathological query cannot grow it."""

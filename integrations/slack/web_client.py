@@ -723,13 +723,17 @@ def search_messages(
     *,
     query: str,
     count: int = 20,
-) -> tuple[list[dict[str, str]] | None, str]:
-    """Search workspace messages (``search.messages``)."""
+) -> tuple[list[dict[str, str]] | None, str, bool]:
+    """Search workspace messages. Returns ``(matches, error, truncated)``.
+
+    ``search.messages`` is fetched as a single page, so ``truncated`` is true
+    when the hit count reaches the requested cap and more matches may exist.
+    """
     q = str(query or "").strip()
     if not q:
-        return None, "query cannot be empty."
+        return None, "query cannot be empty.", False
     if not is_user_token(target.bot_token):
-        return None, _SEARCH_NEEDS_USER_TOKEN
+        return None, _SEARCH_NEEDS_USER_TOKEN, False
     limit = max(1, min(int(count), 100))
     payload, req_err = _request_json(
         "GET",
@@ -738,10 +742,10 @@ def search_messages(
         params={"query": q, "count": limit, "sort": "timestamp"},
     )
     if payload is None:
-        return None, req_err
+        return None, req_err, False
     if not payload.get("ok"):
         error = str(payload.get("error") or "unknown_error")
-        return None, _api_error_hint(error, context="search")
+        return None, _api_error_hint(error, context="search"), False
 
     matches = ((payload.get("messages") or {}).get("matches")) or []
     results: list[dict[str, str]] = []
@@ -764,7 +768,7 @@ def search_messages(
                 "permalink": str(raw.get("permalink") or ""),
             }
         )
-    return results, ""
+    return results, "", len(results) >= limit
 
 
 def add_reaction(

@@ -26,12 +26,13 @@ def _map_slack_search_messages(
         return
     query = str(tool_input.get("query") or "").strip()[:_MAX_SUMMARY_QUERY_CHARS]
     scope = f" for {query!r}" if query else ""
+    truncated = " (truncated)" if output.get("truncated") else ""
     top = matches[0] if isinstance(matches[0], dict) else {}
     record_evidence_entry(
         evidence,
         source="slack_search_messages",
         label="Slack Message Search",
-        summary=f"{len(matches)} matches{scope}",
+        summary=f"{len(matches)} matches{scope}{truncated}",
         url=str(top.get("permalink") or "") or None,
     )
 
@@ -81,6 +82,7 @@ class SlackSearchMessagesTool(BaseTool):
         "status": "'read' on success, 'failed' otherwise",
         "matches": "list of {channel_id, user, ts, text, permalink}",
         "match_count": "number of matches returned",
+        "truncated": "true when the search hit the count cap and more matches may exist",
         "error": "error detail when status is 'failed'",
         "error_type": "validation_error, configuration_error, or api_error",
     }
@@ -100,9 +102,10 @@ class SlackSearchMessagesTool(BaseTool):
                 error_type="configuration_error",
                 matches=[],
                 match_count=0,
+                truncated=False,
             )
 
-        matches, error = search_messages(target, query=query, count=count)
+        matches, error, truncated = search_messages(target, query=query, count=count)
         if matches is None:
             return {
                 "source": SOURCE,
@@ -112,6 +115,7 @@ class SlackSearchMessagesTool(BaseTool):
                 "error_type": ("validation_error" if "empty" in error else "api_error"),
                 "matches": [],
                 "match_count": 0,
+                "truncated": False,
             }
         return {
             "source": SOURCE,
@@ -119,6 +123,7 @@ class SlackSearchMessagesTool(BaseTool):
             "status": "read",
             "matches": matches,
             "match_count": len(matches),
+            "truncated": truncated,
         }
 
 

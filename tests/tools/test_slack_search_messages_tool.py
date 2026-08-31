@@ -98,7 +98,7 @@ def test_description_does_not_promise_a_bot_search_scope() -> None:
 
 def test_bot_token_is_refused_without_calling_slack(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_client(monkeypatch, _ExplodingClient())
-    matches, error = web_client.search_messages(
+    matches, error, _truncated = web_client.search_messages(
         web_client.SlackBotTarget(bot_token="xoxb-x"), query="timeout"
     )
     assert matches is None
@@ -108,7 +108,7 @@ def test_bot_token_is_refused_without_calling_slack(monkeypatch: pytest.MonkeyPa
 def test_rotating_user_token_is_treated_as_a_user_token(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _RecordingClient(_SEARCH_PAYLOAD)
     _install_client(monkeypatch, client)
-    matches, error = web_client.search_messages(
+    matches, error, _truncated = web_client.search_messages(
         web_client.SlackBotTarget(bot_token="xoxe.xoxp-rotating"), query="boom"
     )
     assert error == ""
@@ -152,7 +152,7 @@ def test_slack_rejection_maps_to_the_same_actionable_hint(
 ) -> None:
     """A user token Slack still refuses must not surface the raw error code."""
     _install_client(monkeypatch, _RecordingClient({"ok": False, "error": "not_allowed_token_type"}))
-    matches, error = web_client.search_messages(
+    matches, error, _truncated = web_client.search_messages(
         web_client.SlackBotTarget(bot_token="xoxp-user"), query="boom"
     )
     assert matches is None

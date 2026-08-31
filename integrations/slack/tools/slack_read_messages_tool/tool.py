@@ -34,11 +34,12 @@ def _map_slack_read_messages(
         return
     channel_id = str(output.get("channel_id") or "").strip()
     scope = f" from {channel_id}" if channel_id else ""
+    truncated = " (truncated)" if output.get("truncated") else ""
     record_evidence_entry(
         evidence,
         source="slack_read_messages",
         label="Slack Channel Messages",
-        summary=f"{len(messages)} messages{scope}",
+        summary=f"{len(messages)} messages{scope}{truncated}",
     )
 
 
@@ -105,6 +106,7 @@ class SlackReadMessagesTool(BaseTool):
         "channel_id": "resolved Slack channel ID that was read",
         "messages": "list of {user, ts, thread_ts, text}, oldest first",
         "message_count": "number of messages returned",
+        "truncated": "true when the read hit the page cap and older messages may exist",
         "error": "error detail when status is 'failed'",
         "error_type": "stable failure class: validation_error, configuration_error, or api_error",
     }
@@ -143,15 +145,21 @@ class SlackReadMessagesTool(BaseTool):
                 error_type="api_error" if normalized_ref.startswith("#") else "validation_error",
             )
 
+        # One page is fetched, so a full page means older messages may exist.
+        page_size = clamp_limit(limit)
         messages, error = fetch_channel_messages(
             target,
             channel_id=resolved_id,
-            limit=clamp_limit(limit),
+            limit=page_size,
             thread_ts=str(thread_ts or "").strip(),
         )
         if messages is None:
             return failed_result(available=True, error=error, error_type="api_error")
-        return read_result(channel_id=resolved_id, messages=messages)
+        return read_result(
+            channel_id=resolved_id,
+            messages=messages,
+            truncated=len(messages) >= page_size,
+        )
 
 
 slack_read_messages = tool(
