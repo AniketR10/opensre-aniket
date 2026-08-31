@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.domain.types.evidence import record_evidence_entry
 from core.domain.types.tools import ToolSurface
 from core.tool import BaseTool, SideEffectLevel
 from core.tool_framework import SUMMARIZE_OBSERVATION_TAG, tool
@@ -11,12 +12,36 @@ from core.tool_framework.utils import tool_unavailable
 from integrations.slack.tools.slack_read_messages_tool.constants import SOURCE
 from integrations.slack.web_client import resolve_user_token, search_messages, user_token_configured
 
+# Cap the query echoed into the evidence summary: the entry is re-read on every
+# later turn, so a long search string costs context without adding signal.
+_MAX_SUMMARY_QUERY_CHARS = 80
+
+
+def _map_slack_search_messages(
+    evidence: dict[str, Any], output: dict[str, Any], tool_input: dict[str, Any]
+) -> None:
+    """Record workspace search hits as citeable evidence, linking the top match."""
+    matches = output.get("matches")
+    if not isinstance(matches, list) or not matches:
+        return
+    query = str(tool_input.get("query") or "").strip()[:_MAX_SUMMARY_QUERY_CHARS]
+    scope = f" for {query!r}" if query else ""
+    top = matches[0] if isinstance(matches[0], dict) else {}
+    record_evidence_entry(
+        evidence,
+        source="slack_search_messages",
+        label="Slack Message Search",
+        summary=f"{len(matches)} matches{scope}",
+        url=str(top.get("permalink") or "") or None,
+    )
+
 
 class SlackSearchMessagesTool(BaseTool):
     """Search Slack messages across the workspace."""
 
     name = "slack_search_messages"
     source = SOURCE
+    evidence_mapper = _map_slack_search_messages
     description = (
         "Search Slack *messages* workspace-wide (search.messages). "
         "Use Slack search syntax (e.g. 'in:#incidents timeout', 'from:@user error'). "

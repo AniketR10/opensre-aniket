@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.domain.types.evidence import record_evidence_entry
 from core.domain.types.tools import ToolSurface
 from core.tool import BaseTool, SideEffectLevel
 from core.tool_framework import SUMMARIZE_OBSERVATION_TAG, tool
@@ -24,11 +25,29 @@ from integrations.slack.web_client import (
 )
 
 
+def _map_slack_read_messages(
+    evidence: dict[str, Any], output: dict[str, Any], _tool_input: dict[str, Any]
+) -> None:
+    """Record the channel/thread history read as citeable evidence."""
+    messages = output.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+    channel_id = str(output.get("channel_id") or "").strip()
+    scope = f" from {channel_id}" if channel_id else ""
+    record_evidence_entry(
+        evidence,
+        source="slack_read_messages",
+        label="Slack Channel Messages",
+        summary=f"{len(messages)} messages{scope}",
+    )
+
+
 class SlackReadMessagesTool(BaseTool):
     """Read recent messages from a Slack channel or thread the bot can see."""
 
     name = "slack_read_messages"
     source = SOURCE
+    evidence_mapper = _map_slack_read_messages
     description = (
         "Read recent *messages* from one Slack channel or thread the bot can see "
         "(conversations.history / conversations.replies). Pass channel ID (C…) or "

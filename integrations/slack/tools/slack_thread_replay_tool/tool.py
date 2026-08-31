@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from core.domain.types.evidence import EvidenceSource
+from core.domain.types.evidence import EvidenceSource, record_evidence_entry
 from core.domain.types.tools import ToolSurface
 from core.tool import BaseTool, SideEffectLevel
 from core.tool_framework import tool
@@ -10,9 +10,32 @@ from integrations.slack.thread_client import fetch_thread, parse_thread_ref
 from integrations.slack.web_client import bot_token_configured
 
 
+def _map_replay_slack_thread_locally(
+    evidence: dict[str, Any], output: dict[str, Any], _tool_input: dict[str, Any]
+) -> None:
+    """Record the replayed thread as citeable evidence when messages were fetched."""
+    thread = output.get("thread")
+    if not isinstance(thread, dict):
+        return
+    messages = thread.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+    channel = str(thread.get("channel") or "").strip()
+    timestamp = str(thread.get("ts") or "").strip()
+    ref = f" from {channel}/{timestamp}" if channel and timestamp else ""
+    truncated = " (truncated)" if thread.get("truncated") else ""
+    record_evidence_entry(
+        evidence,
+        source="replay_slack_thread_locally",
+        label="Slack Thread Replay",
+        summary=f"{len(messages)} thread messages{ref}{truncated}",
+    )
+
+
 class ReplaySlackThreadLocallyTool(BaseTool):
     name = "replay_slack_thread_locally"
     source: ClassVar[EvidenceSource] = "slack"
+    evidence_mapper = _map_replay_slack_thread_locally
     surfaces = (ToolSurface.INVESTIGATION, ToolSurface.CHAT, ToolSurface.ACTION)
     side_effect_level = SideEffectLevel.READ_ONLY
     description = "Fetch a captured Slack thread for local replay and Slack bot behavior testing."
