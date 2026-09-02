@@ -1,7 +1,7 @@
 """Shared GitHub MCP integration helpers.
 
 This module centralizes GitHub MCP configuration, validation, and tool calling
-so the onboarding wizard, verify CLI, chat tools, and investigation actions all
+so the onboarding wizard, verify CLI, and chat tools all
 use the same transport and parsing logic.
 """
 
@@ -44,7 +44,7 @@ DEFAULT_GITHUB_MCP_TOOLSETS = ("repos", "issues", "pull_requests", "actions", "s
 # Non-transport metadata persisted alongside MCP credentials in the integration store.
 _CREDENTIAL_METADATA_KEYS: frozenset[str] = frozenset({"username"})
 
-REQUIRED_SOURCE_INVESTIGATION_TOOLS = (
+REQUIRED_SOURCE_TOOLS = (
     "get_file_contents",
     "get_repository_tree",
     "list_commits",
@@ -55,7 +55,7 @@ REQUIRED_SOURCE_INVESTIGATION_TOOLS = (
 # Hosted Copilot MCP often omits list_repositories and requires args on the others,
 # so auto falls through to a ``search_repositories user:<login>`` query (the user's own
 # repos). Starred repositories are intentionally excluded here — they are irrelevant for
-# SRE investigations and only surfaced when ``repo_view="starred"`` is chosen explicitly.
+# SRE work and only surfaced when ``repo_view="starred"`` is chosen explicitly.
 _REPO_PROBE_NO_ARG_TOOLS: tuple[str, ...] = (
     "list_repositories",
     "list_user_repositories",
@@ -1259,7 +1259,7 @@ def _repo_access_probe_fallback_result(
         note=(
             "authenticated; repo probes inconclusive "
             f"({last_probe_tool}: {last_probe_detail.strip()}); "
-            "MCP investigation tools are available"
+            "MCP tools are available"
         ),
     )
 
@@ -1331,12 +1331,12 @@ async def _validate_github_mcp_config_async(
     tools = _tool_defs((await session.list_tools()).tools)
     tool_names = tuple(sorted(t["name"] for t in tools))
 
-    missing = sorted(set(REQUIRED_SOURCE_INVESTIGATION_TOOLS) - set(tool_names))
+    missing = sorted(set(REQUIRED_SOURCE_TOOLS) - set(tool_names))
     if missing:
         return GitHubMCPValidationResult(
             ok=False,
             detail=(
-                "GitHub MCP connected, but required repository investigation tools are missing: "
+                "GitHub MCP connected, but required repository tools are missing: "
                 f"{', '.join(missing)}."
             ),
             tool_names=tool_names,

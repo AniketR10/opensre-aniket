@@ -258,11 +258,11 @@ class TestResolvePromptPlaceholder:
 
     def test_shows_running_task_count(self) -> None:
         session = Session()
-        task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
+        task = session.task_registry.create(TaskKind.CLI_COMMAND)
         task.mark_running()
         assert "1 task running" in _placeholder_text(session)
 
-        second = session.task_registry.create(TaskKind.INVESTIGATION)
+        second = session.task_registry.create(TaskKind.CODE_AGENT)
         second.mark_running()
         assert "2 tasks running" in _placeholder_text(session)
 
@@ -318,10 +318,10 @@ class TestCompletionPreviewHint:
 
     def test_shows_full_slash_command_description(self, monkeypatch: pytest.MonkeyPatch) -> None:
         completion = Completion(
-            "/investigate",
+            "/gateway",
             start_position=-1,
-            display="/investigate",
-            display_meta="Run an RCA investigation from a file or sample templa…",
+            display="/gateway",
+            display_meta="Control the background OpenSRE gateway daemon: start…",
         )
         app = _FakeApp(
             current_buffer=_FakeBuffer(
@@ -336,8 +336,8 @@ class TestCompletionPreviewHint:
         monkeypatch.setattr(prompt_completion, "get_app_or_none", lambda: app)
 
         rendered = _strip_ansi(completion_preview_hint_ansi())
-        assert rendered.startswith("/investigate — ")
-        assert len(rendered) > len("/investigate — " + completion.display_meta_text)
+        assert rendered.startswith("/gateway — ")
+        assert len(rendered) > len("/gateway — " + completion.display_meta_text)
         assert "…" not in rendered
 
     def test_unregistered_slash_completion_uses_display_label(
