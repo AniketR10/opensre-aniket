@@ -288,9 +288,10 @@ class TestRunTaskNow:
         # Ad-hoc runs use second-precision to avoid colliding with scheduled runs
         assert len(fire_time.split("T")[1].rstrip("Z").split(":")) == 3
 
-    def test_only_failed_with_no_prior_run_falls_back_to_a_full_run(
+    def test_only_failed_with_no_prior_run_refuses_rather_than_widening(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Unknown history must never become "deliver to everyone"."""
         task = ScheduledTask(
             id="run_now_no_history",
             kind=TaskKind.MANUAL_LOOP,
@@ -308,9 +309,10 @@ class TestRunTaskNow:
 
         with patch("infrastructure.scheduling.scheduler.runner.execute_task") as mock_exec:
             mock_exec.return_value = True
-            run_task_now("run_now_no_history", real_runners(), only_failed=True)
+            result = run_task_now("run_now_no_history", real_runners(), only_failed=True)
 
-        assert mock_exec.call_args.kwargs["target_filter"] is None
+        assert result is False
+        mock_exec.assert_not_called()
 
     def test_only_failed_narrows_to_the_failed_destinations(
         self, monkeypatch: pytest.MonkeyPatch

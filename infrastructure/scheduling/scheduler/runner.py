@@ -375,30 +375,41 @@ def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool =
     ``only_failed=True`` retries only the destinations the most recently
     completed run failed at, instead of delivering to every configured
     destination again -- recovering a partial failure without re-posting to
-    channels that already received the message. Falls back to a normal full
-    run when there is no per-target history to narrow from (no prior run, or
-    one recorded before per-target outcomes were tracked).
+    channels that already received the message.
+
+    It never widens: when no usable per-target history can be read, the run is
+    refused rather than falling back to delivering everywhere. Widening is the
+    one direction that causes harm the operator did not ask for (a duplicate
+    report at a destination that already received it), and a caller that does
+    want every destination has one -- an ordinary run without ``only_failed``.
     """
     task = get_task(task_id)
     if task is None:
         return False
 
+    target_filter: frozenset[tuple[Provider, str]] | None = None
+    if only_failed:
+        target_filter = failed_retry_scope(task_id)
+        if target_filter is None:
+            logger.warning(
+                "Task %s has no readable per-target history; refusing to widen "
+                "a failed-only retry to every destination",
+                task_id,
+            )
+            return False
+
     fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    target_filter = _failed_targets(task_id) if only_failed else None
     return execute_task(task, fire_time, runners, target_filter=target_filter)
 
 
-def _failed_targets(task_id: str) -> frozenset[tuple[Provider, str]] | None:
-    """Destinations the most recent run with per-target history failed at.
+def failed_retry_scope(task_id: str) -> frozenset[tuple[Provider, str]] | None:
+    """Destinations a ``--failed-only`` retry of ``task_id`` should target.
 
-    ``None`` means there is no per-target history at all to narrow from -- the
-    caller should run normally. An empty (non-``None``) result means that run
-    had no failures, so a ``--failed-only`` rerun has nothing to retry.
-
-    Reads the latest run that actually recorded outcomes rather than simply
-    the latest run: a build failure, or a retry that matched no destination,
-    records none, and treating that as "no history" would widen the next
-    retry back to every destination.
+    ``None`` means no run with readable per-target outcomes could be found, so
+    what failed is unknown and the caller must not retry: there is no scope to
+    narrow to, and widening to every destination would re-post where the
+    message already landed. An empty (non-``None``) set means history was read
+    and nothing had failed -- there is simply nothing to retry.
     """
     from infrastructure.scheduling.scheduler.claim_store import get_latest_targeted_run
 
@@ -412,6 +423,7 @@ def _failed_targets(task_id: str) -> frozenset[tuple[Provider, str]] | None:
 
 __all__ = [
     "compute_next_run",
+    "failed_retry_scope",
     "refresh_background_scheduler",
     "resync_scheduler_jobs",
     "run_task_now",

@@ -30,8 +30,10 @@ _MIGRATION_TIMEOUT_SECONDS = 30.0
 _MIGRATION_RETRY_DELAY_SECONDS = 0.1
 
 #: How far back to look for a run with readable per-target history before
-#: concluding there is none to narrow a retry to.
-_TARGETED_RUN_SCAN_LIMIT = 20
+#: reporting none. Only a bound on work, not on correctness: exhausting it
+#: reads as "history unknown", and a failed-only retry refuses to run rather
+#: than widening to every destination.
+_TARGETED_RUN_SCAN_LIMIT = 50
 
 
 def _default_db_path() -> Path:

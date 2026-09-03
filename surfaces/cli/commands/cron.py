@@ -236,7 +236,7 @@ def cron_run(task_id: str, failed_only: bool) -> None:
     from bootstrap.adapters import scheduler_runners
     from bootstrap.process import SCHEDULED_COMMAND_PROFILE, configure_process
     from infrastructure.scheduling.scheduler.operation_log import record_scheduler_task_operation
-    from infrastructure.scheduling.scheduler.runner import run_task_now
+    from infrastructure.scheduling.scheduler.runner import failed_retry_scope, run_task_now
     from infrastructure.scheduling.scheduler.store import get_task
 
     configure_process(SCHEDULED_COMMAND_PROFILE)
@@ -246,7 +246,19 @@ def cron_run(task_id: str, failed_only: bool) -> None:
         _console.print(f"[red]Error: task {task_id} not found.[/red]")
         raise SystemExit(1)
 
-    if not failed_only:
+    if failed_only:
+        scope = failed_retry_scope(task_id)
+        if scope is None:
+            _console.print(
+                "[red]No readable per-target history for this task, so which "
+                "destinations failed is unknown.[/red]"
+            )
+            _console.print("Run without --failed-only to deliver to every configured destination.")
+            raise SystemExit(1)
+        if not scope:
+            _console.print("[dim]Nothing to retry — the most recent run had no failures.[/dim]")
+            return
+    else:
         _warn_if_rerun_duplicates(task_id)
 
     _console.print(f"Running task {task_id} ({task.kind.value})...")
