@@ -248,13 +248,6 @@ RULES: tuple[PathRule, ...] = (
         ),
     ),
     PathRule(
-        "integrations/openclaw/",
-        (
-            "tests/tools/test_openclaw_mcp_tool.py",
-            "tests/tools/test_telemetry.py",
-        ),
-    ),
-    PathRule(
         "integrations/openobserve/",
         (
             "tests/tools/test_openobserve_logs_tool.py",

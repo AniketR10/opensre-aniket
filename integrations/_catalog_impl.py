@@ -155,13 +155,6 @@ from config.constants.new_relic import (
     NEW_RELIC_BASE_URL_ENV,
     NEW_RELIC_INSTANCES_ENV,
 )
-from config.constants.openclaw import (
-    OPENCLAW_MCP_ARGS_ENV,
-    OPENCLAW_MCP_AUTH_TOKEN_ENV,
-    OPENCLAW_MCP_COMMAND_ENV,
-    OPENCLAW_MCP_MODE_ENV,
-    OPENCLAW_MCP_URL_ENV,
-)
 from config.constants.opensearch import (
     OPENSEARCH_API_KEY_ENV,
     OPENSEARCH_PASSWORD_ENV,
@@ -333,8 +326,6 @@ from integrations.mysql import build_mysql_config
 from integrations.mysql import classify as _classify_mysql
 from integrations.new_relic import classify as _classify_new_relic
 from integrations.new_relic.config import NewRelicIntegrationConfig
-from integrations.openclaw import build_openclaw_config
-from integrations.openclaw import classify as _classify_openclaw
 from integrations.openobserve import classify as _classify_openobserve
 from integrations.opensearch import classify as _classify_opensearch
 from integrations.opsgenie import classify as _classify_opsgenie
@@ -533,7 +524,6 @@ _CLASSIFIERS: dict[str, _ClassifyFn] = {
     "slack": _classify_slack,
     "whatsapp": _classify_whatsapp,
     "twilio": _classify_twilio,
-    "openclaw": _classify_openclaw,
     "posthog": _classify_posthog,
     "posthog_mcp": _classify_posthog_mcp,
     "sentry_mcp": _classify_sentry_mcp,
@@ -1559,39 +1549,6 @@ def load_env_integrations() -> list[dict[str, Any]]:
                     atlas_config.model_dump(exclude={"integration_id"}),
                 )
             )
-
-    openclaw_url = os.getenv(OPENCLAW_MCP_URL_ENV, "").strip()
-    openclaw_command = os.getenv(OPENCLAW_MCP_COMMAND_ENV, "").strip()
-    openclaw_mode = os.getenv(OPENCLAW_MCP_MODE_ENV, "streamable-http").strip().lower()
-    openclaw_mode = openclaw_mode or "streamable-http"
-    if (openclaw_mode == "stdio" and openclaw_command) or (
-        openclaw_mode != "stdio" and openclaw_url
-    ):
-        try:
-            openclaw_config = build_openclaw_config(
-                {
-                    "url": openclaw_url,
-                    "mode": openclaw_mode,
-                    "command": openclaw_command,
-                    "args": [
-                        part
-                        for part in os.getenv(OPENCLAW_MCP_ARGS_ENV, "").strip().split()
-                        if part
-                    ],
-                    "auth_token": resolve_env_credential(OPENCLAW_MCP_AUTH_TOKEN_ENV),
-                }
-            )
-            integrations.append(
-                _active_env_record(
-                    "openclaw",
-                    {
-                        **openclaw_config.model_dump(exclude={"integration_id"}),
-                        "connection_verified": True,
-                    },
-                )
-            )
-        except Exception as exc:
-            _report_env_loader_failure(exc, integration="openclaw")
 
     try:
         posthog_config = posthog_config_from_env()

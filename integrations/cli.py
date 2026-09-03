@@ -680,14 +680,6 @@ def _setup_twilio() -> None:
     _run_spec_setup(TWILIO_SETUP)
 
 
-def _setup_openclaw() -> None:
-    from integrations.openclaw.setup import OPENCLAW_SETUP
-
-    _run_spec_setup(OPENCLAW_SETUP)
-    print('    - uv run opensre ask "check the OpenClaw gateway status"')
-    print("    - for richer answers, also configure Grafana/Datadog and GitHub")
-
-
 def _setup_posthog_mcp() -> None:
     from integrations.posthog_mcp.setup import POSTHOG_MCP_SETUP
 
@@ -825,7 +817,6 @@ _HANDLERS: dict[str, Any] = {
     "smtp": _setup_smtp,
     "whatsapp": _setup_whatsapp,
     "twilio": _setup_twilio,
-    "openclaw": _setup_openclaw,
     "posthog_mcp": _setup_posthog_mcp,
     "sentry_mcp": _setup_sentry_mcp,
     "x_mcp": _setup_x_mcp,

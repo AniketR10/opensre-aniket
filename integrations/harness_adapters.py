@@ -157,7 +157,7 @@ def _register_secondary_tool_sources() -> None:
     # integrations match. Each is owned by its own integration package;
     # registered here (rather than from each package's own module-import time)
     # so the set is explicit and easy to audit in one place.
-    for source in ("knowledge", "openclaw", "google_docs"):
+    for source in ("knowledge", "google_docs"):
         register_secondary_tool_source(source)
 
 

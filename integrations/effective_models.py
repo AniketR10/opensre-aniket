@@ -69,7 +69,6 @@ class EffectiveIntegrations(StrictConfigModel):
     smtp: EffectiveIntegrationEntry | None = None
     whatsapp: EffectiveIntegrationEntry | None = None
     twilio: EffectiveIntegrationEntry | None = None
-    openclaw: EffectiveIntegrationEntry | None = None
     posthog_mcp: EffectiveIntegrationEntry | None = None
     sentry_mcp: EffectiveIntegrationEntry | None = None
     x_mcp: EffectiveIntegrationEntry | None = None

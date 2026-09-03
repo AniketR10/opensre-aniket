@@ -261,7 +261,6 @@
                   "airflow",
                   "dagster",
                   "kafka",
-                  "openclaw",
                   "prefect",
                   "rabbitmq",
                   "temporal"

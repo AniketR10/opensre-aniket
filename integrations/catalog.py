@@ -25,6 +25,7 @@ from config.constants.yandex_cloud import (
     YC_USE_METADATA_ENV,
 )
 from integrations import _catalog_impl
+from integrations.registry import INTEGRATION_SPECS_BY_SERVICE, family_key, service_key
 from integrations.store import load_integrations
 
 
@@ -177,14 +178,6 @@ def load_env_integration_services() -> list[str]:
             "MONGODB_ATLAS_PUBLIC_KEY", "MONGODB_ATLAS_PRIVATE_KEY", "MONGODB_ATLAS_PROJECT_ID"
         ),
     )
-    add(
-        "openclaw",
-        (
-            _env_is_set("OPENCLAW_MCP_COMMAND")
-            and os.getenv("OPENCLAW_MCP_MODE", "").strip().lower() == "stdio"
-        )
-        or _env_is_set("OPENCLAW_MCP_URL"),
-    )
     add("posthog_mcp", _any_env("POSTHOG_MCP_COMMAND", "POSTHOG_MCP_URL", "POSTHOG_MCP_AUTH_TOKEN"))
     add("sentry_mcp", _any_env("SENTRY_MCP_COMMAND", "SENTRY_MCP_URL", "SENTRY_MCP_AUTH_TOKEN"))
     add("x_mcp", _any_env("X_MCP_COMMAND", "X_MCP_URL", "X_MCP_AUTH_TOKEN"))
@@ -240,10 +233,15 @@ def _configured_service_names(*, store_records: list[dict[str, Any]]) -> list[st
         if str(record.get("status", "active")).strip().lower() != "active":
             continue
         service = str(record.get("service", "")).strip().lower()
-        if service:
+        if service and _is_registered_service(service):
             services.append(service)
 
     return list(dict.fromkeys(services))
+
+
+def _is_registered_service(service: str) -> bool:
+    """Return whether ``service`` still has a registered integration implementation."""
+    return family_key(service_key(service)) in INTEGRATION_SPECS_BY_SERVICE
 
 
 # Hosted MCP integrations that strictly require a personal API token when not
@@ -293,7 +291,7 @@ def configured_integration_health() -> list[tuple[str, str]]:
         if str(record.get("status", "active")).strip().lower() != "active":
             continue
         service = str(record.get("service", "")).strip().lower()
-        if not service:
+        if not service or not _is_registered_service(service):
             continue
         credentials = record.get("credentials")
         if isinstance(credentials, dict):

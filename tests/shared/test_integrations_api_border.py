@@ -58,7 +58,6 @@ _ALLOWED: dict[str, frozenset[str]] = {
             "integrations.dagster.setup",
             "integrations.github.setup",
             "integrations.jenkins.setup",
-            "integrations.openclaw.setup",
             "integrations.posthog.report_prerequisites",
             "integrations.posthog.setup",
             "integrations.posthog_mcp.setup",

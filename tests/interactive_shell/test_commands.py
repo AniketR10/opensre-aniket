@@ -351,7 +351,6 @@ class TestSpecificListCommands:
         {"service": "datadog", "source": "store", "status": "ok", "detail": "API ok"},
         {"service": "slack", "source": "env", "status": "failed", "detail": "No bot token"},
         {"service": "github", "source": "store", "status": "ok", "detail": "MCP ok"},
-        {"service": "openclaw", "source": "store", "status": "failed", "detail": "401 from server"},
     ]
 
     def _patch_verify(self, monkeypatch: object) -> None:
@@ -368,7 +367,6 @@ class TestSpecificListCommands:
         output = buf.getvalue()
         assert "datadog" in output
         assert "slack" in output
-        assert "openclaw" in output
         assert "github" in output
 
     def test_mcp_list_shows_only_mcp_services(self, monkeypatch: object) -> None:
@@ -376,7 +374,6 @@ class TestSpecificListCommands:
         console, buf = _capture()
         dispatch_slash("/mcp list", Session(), console)
         output = buf.getvalue()
-        assert "openclaw" in output
         assert "github" in output
         assert "datadog" not in output
 
@@ -686,7 +683,6 @@ class TestIntegrationsCommand:
 class TestMcpCommand:
     _FAKE = [
         {"service": "github", "source": "store", "status": "ok", "detail": "MCP ok"},
-        {"service": "openclaw", "source": "store", "status": "ok", "detail": "ok"},
     ]
 
     def _patch(self, monkeypatch: object) -> None:

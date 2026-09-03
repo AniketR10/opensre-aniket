@@ -2091,10 +2091,6 @@
     "seconds": 0.01,
     "tests": 3
   },
-  "tests/integrations/openclaw/test_integration.py": {
-    "seconds": 0.575,
-    "tests": 51
-  },
   "tests/integrations/opsgenie/test_client.py": {
     "seconds": 0.665,
     "tests": 25
@@ -3726,10 +3722,6 @@
   "tests/tools/test_new_relic_metrics_tool.py": {
     "seconds": 0.289,
     "tests": 30
-  },
-  "tests/tools/test_openclaw_mcp_tool.py": {
-    "seconds": 0.674,
-    "tests": 44
   },
   "tests/tools/test_openobserve_logs_tool.py": {
     "seconds": 0.361,

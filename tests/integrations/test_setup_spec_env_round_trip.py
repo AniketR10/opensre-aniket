@@ -52,7 +52,6 @@ from integrations.mongodb.setup import MONGODB_SETUP
 from integrations.mongodb_atlas.setup import MONGODB_ATLAS_SETUP
 from integrations.mysql.setup import MYSQL_SETUP
 from integrations.new_relic.setup import NEW_RELIC_SETUP
-from integrations.openclaw.setup import OPENCLAW_SETUP
 from integrations.opensearch.setup import OPENSEARCH_SETUP
 from integrations.pagerduty.setup import PAGERDUTY_SETUP
 from integrations.postgresql.setup import POSTGRESQL_SETUP
@@ -194,13 +193,6 @@ _SUBMITTED: dict[str, dict[str, str]] = {
         "username": "bs-user",
         "password": "bs-password",
         "sources": "t1_checkout,t2_api",
-    },
-    "openclaw": {
-        "mode": "stdio",
-        "command": "openclaw",
-        "args": "mcp serve",
-        "url": "",
-        "auth_token": "",
     },
     "servicenow": {
         "instance_url": "https://dev12345.service-now.com",
@@ -353,7 +345,6 @@ _SPECS = [
     SENTRY_MCP_SETUP,
     X_MCP_SETUP,
     BETTERSTACK_SETUP,
-    OPENCLAW_SETUP,
     SERVICENOW_SETUP,
     POSTGRESQL_SETUP,
     MYSQL_SETUP,

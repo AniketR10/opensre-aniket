@@ -219,10 +219,10 @@ def test_integration_count_includes_all_configured(monkeypatch: object) -> None:
     # Every configured integration counts (not just MCP ones), any health state.
     monkeypatch.setattr(
         "integrations.catalog.configured_integration_health",
-        lambda: [("datadog", "ok"), ("github", "ok"), ("openclaw", "incomplete")],
+        lambda: [("datadog", "ok"), ("github", "ok")],
     )
 
-    assert banner_state_module._count_configured_integrations() == 3
+    assert banner_state_module._count_configured_integrations() == 2
 
 
 def test_status_probes_survive_loader_failures(monkeypatch: object) -> None:
