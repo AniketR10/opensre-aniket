@@ -330,6 +330,49 @@ class TestPerTargetOutcomes:
         claim_store._add_missing_columns(conn)  # must not raise
         assert calls["count"] == 2
 
+    def test_a_winner_committing_after_our_timeout_is_picked_up_on_retry(
+        self, db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The window a single post-timeout recheck cannot see.
+
+        Our ``ALTER TABLE`` times out while the competing migration is still
+        uncommitted, so the schema recheck right after the failure genuinely
+        finds nothing. The winner commits a moment later; the next attempt
+        re-reads the schema, sees the column, and returns without a second
+        write or a raised error.
+        """
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                fire_time TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                posted_message_id TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                UNIQUE(task_id, fire_time)
+            )
+        """)
+        conn.commit()
+
+        # False for the pre-check and the post-timeout recheck (the winner has
+        # not committed yet), then True once it lands during the retry delay.
+        checks = {"count": 0}
+
+        def _column_appears_on_the_retry(_conn: sqlite3.Connection) -> bool:
+            checks["count"] += 1
+            return checks["count"] > 2
+
+        monkeypatch.setattr(claim_store, "_has_targets_column", _column_appears_on_the_retry)
+
+        claim_store._add_missing_columns(_AlterFailsConnection(conn))  # must not raise
+
+        # Pre-check, post-timeout recheck, then the retry's own pre-check.
+        assert checks["count"] == 3
+
     def test_a_genuine_alter_failure_still_raises(self, db_path: Path) -> None:
         """The recheck must not swallow a real failure (e.g. a lock timeout)
         where the column genuinely never landed."""

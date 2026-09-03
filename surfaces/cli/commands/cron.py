@@ -197,6 +197,31 @@ def cron_remove(task_id: str) -> None:
         raise SystemExit(1)
 
 
+def _warn_if_rerun_duplicates(task_id: str) -> None:
+    """Warn before a full rerun re-posts where the last run already delivered.
+
+    A partial failure is the case an operator is most likely to reach for
+    ``cron run`` to fix, and a full rerun is the one thing that quietly
+    double-posts. Warn rather than narrow the delivery silently: a plain
+    ``cron run`` is also the way to trigger a task on demand, and that has to
+    keep reaching every destination.
+    """
+    from infrastructure.scheduling.scheduler.claim_store import get_latest_finished_run
+
+    run = get_latest_finished_run(task_id)
+    if run is None or not run.targets:
+        return
+    delivered = [outcome for outcome in run.targets if outcome.ok]
+    if not delivered or len(delivered) == len(run.targets):
+        return
+    names = ", ".join(outcome.label() for outcome in delivered)
+    _console.print(
+        f"[yellow]Note: the most recent run already delivered to {names}. "
+        "This re-sends there too — use --failed-only to retry just the "
+        "destinations that failed.[/yellow]"
+    )
+
+
 @cron_command.command(name="run")
 @click.argument("task_id")
 @click.option(
@@ -220,6 +245,9 @@ def cron_run(task_id: str, failed_only: bool) -> None:
     if task is None:
         _console.print(f"[red]Error: task {task_id} not found.[/red]")
         raise SystemExit(1)
+
+    if not failed_only:
+        _warn_if_rerun_duplicates(task_id)
 
     _console.print(f"Running task {task_id} ({task.kind.value})...")
     record_scheduler_task_operation(

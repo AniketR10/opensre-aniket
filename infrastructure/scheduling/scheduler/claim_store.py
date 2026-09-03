@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,11 @@ from infrastructure.scheduling.scheduler.types import DeliveryOutcome, TaskRun, 
 logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "scheduler.db"
+
+#: Attempts to add a column when a competing process may hold the write lock.
+#: Each attempt re-reads the schema first, so a winner's commit ends the loop.
+_MIGRATION_ATTEMPTS = 3
+_MIGRATION_RETRY_DELAY_SECONDS = 0.1
 
 
 def _default_db_path() -> Path:
@@ -64,21 +70,28 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a database was first created.
 
     Two processes can both see the column missing before either commits its
-    ``ALTER TABLE``. The loser's own ``ALTER TABLE`` then fails — either with
-    "duplicate column" if the winner's write had already landed, or with a
-    lock-timeout if it is still in flight and outlasts ``busy_timeout``.
-    Rechecking the schema after any failure (rather than matching the error
-    text) covers both: if the column is there now, the migration succeeded
-    one way or another and the error is not this connection's problem: a
-    genuine failure, one where the column is still missing, still raises.
+    ``ALTER TABLE``, so the loser's own write fails — with "duplicate column"
+    if the winner already committed, or with a lock-timeout if the winner is
+    still in flight and outlasts ``busy_timeout``. Rechecking the schema
+    (rather than matching the error text) covers the first case, and retrying
+    covers the second: at timeout the winner's column is not visible yet, so
+    a single recheck would wrongly conclude the migration failed. Each retry
+    re-reads the schema first, so the loser exits as soon as the winner's
+    commit lands. A failure that outlives every attempt still raises.
     """
-    if _has_targets_column(conn):
-        return
-    try:
-        conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        if not _has_targets_column(conn):
-            raise
+    for remaining in reversed(range(_MIGRATION_ATTEMPTS)):
+        if _has_targets_column(conn):
+            return
+        try:
+            conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            if _has_targets_column(conn):
+                return
+            if not remaining:
+                raise
+            time.sleep(_MIGRATION_RETRY_DELAY_SECONDS)
+        else:
+            return
 
 
 def try_claim(task_id: str, fire_time: str, db_path: Path | None = None) -> bool:

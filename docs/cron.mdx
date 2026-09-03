@@ -81,12 +81,15 @@ Delete a scheduled task by its ID.
 Execute a task immediately (ad-hoc one-shot). Useful for debugging delivery
 without waiting for the next cron tick.
 
-By default this delivers to every configured destination again, even ones
-that already received the message. To recover a partial failure without
-re-posting to channels that already got it, use `--failed-only` — it retries
+By default this delivers to every configured destination again, even ones that
+already received the message — that is what you want to trigger a task on
+demand. To recover a partial failure instead, use `--failed-only`: it retries
 only the destinations the most recent run failed at. With no prior run, or one
 from before per-target history was tracked, `--failed-only` falls back to a
 normal full run.
+
+When the last run was a partial failure, a plain `cron run` warns which
+destinations it is about to re-deliver to before it sends.
 
 ### `opensre cron logs <task_id>`
 
