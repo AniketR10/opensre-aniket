@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from infrastructure.scheduling.scheduler.credentials import requires_explicit_chat_id
-from infrastructure.scheduling.scheduler.types import Provider, TaskKind
+from infrastructure.scheduling.scheduler.types import Provider, TaskKind, TaskRun
 from infrastructure.terminal.theme import GLYPH_ERROR, GLYPH_SUCCESS
 from surfaces.cli.commands.scheduling import validate_cron_and_timezone
 
@@ -228,6 +228,13 @@ def cron_run(task_id: str) -> None:
         raise SystemExit(1)
 
 
+def _delivered_targets(run: TaskRun) -> str:
+    """How many of a run's destinations were delivered to (``2/3``)."""
+    if not run.targets:
+        return "—"
+    return f"{sum(1 for outcome in run.targets if outcome.ok)}/{len(run.targets)}"
+
+
 @cron_command.command(name="logs")
 @click.argument("task_id")
 @click.option(
@@ -255,6 +262,7 @@ def cron_logs(task_id: str, limit: int) -> None:
     table = Table(show_header=True, header_style="bold")
     table.add_column("Started")
     table.add_column("Status")
+    table.add_column("Targets")
     table.add_column("Message ID")
     table.add_column("Error")
 
@@ -271,6 +279,7 @@ def cron_logs(task_id: str, limit: int) -> None:
             f"[{status_style}]{run.status.value}[/{status_style}]"
             if status_style
             else run.status.value,
+            _delivered_targets(run),
             run.posted_message_id or "—",
             run.error[:50] if run.error else "—",
         )

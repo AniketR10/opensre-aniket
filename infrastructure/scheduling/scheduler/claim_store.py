@@ -6,13 +6,18 @@ multiple scheduler instances race for the same tick.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from config.constants import OPENSRE_HOME_DIR
-from infrastructure.scheduling.scheduler.types import TaskRun, TaskStatus
+from infrastructure.scheduling.scheduler.types import DeliveryOutcome, TaskRun, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "scheduler.db"
 
@@ -43,10 +48,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             posted_message_id TEXT DEFAULT '',
             error TEXT DEFAULT '',
             provider TEXT DEFAULT '',
+            targets TEXT DEFAULT '',
             UNIQUE(task_id, fire_time)
         )
     """)
+    _add_missing_columns(conn)
     conn.commit()
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(task_runs)")}
+    if "targets" not in existing:
+        conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
 
 
 def try_claim(task_id: str, fire_time: str, db_path: Path | None = None) -> bool:
@@ -82,9 +96,14 @@ def complete_run(
     posted_message_id: str = "",
     error: str = "",
     provider: str = "",
+    targets: Sequence[DeliveryOutcome] = (),
     db_path: Path | None = None,
 ) -> None:
-    """Mark a claimed run as completed (success or failed)."""
+    """Mark a claimed run as completed, recording each destination's outcome.
+
+    ``targets`` is stored in the order it is given, which is the order the run
+    planned its destinations in — not the order they finished.
+    """
     path = db_path or _default_db_path()
     conn = _connect(path)
     try:
@@ -92,13 +111,42 @@ def complete_run(
         now = datetime.now(UTC).isoformat()
         conn.execute(
             "UPDATE task_runs SET finished_at = ?, status = ?, "
-            "posted_message_id = ?, error = ?, provider = ? "
+            "posted_message_id = ?, error = ?, provider = ?, targets = ? "
             "WHERE task_id = ? AND fire_time = ?",
-            (now, status.value, posted_message_id, error, provider, task_id, fire_time),
+            (
+                now,
+                status.value,
+                posted_message_id,
+                error,
+                provider,
+                _encode_targets(targets),
+                task_id,
+                fire_time,
+            ),
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def _encode_targets(targets: Sequence[DeliveryOutcome]) -> str:
+    """Serialize per-destination outcomes for the ``targets`` column."""
+    if not targets:
+        return ""
+    return json.dumps([outcome.model_dump(mode="json") for outcome in targets])
+
+
+def _decode_targets(raw: Any) -> tuple[DeliveryOutcome, ...]:
+    """Read back per-destination outcomes; unreadable rows degrade to empty."""
+    text = str(raw or "").strip()
+    if not text:
+        return ()
+    try:
+        entries = json.loads(text)
+        return tuple(DeliveryOutcome.model_validate(entry) for entry in entries)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.debug("Skipping unreadable per-target run outcomes", exc_info=True)
+        return ()
 
 
 def _row_to_task_run(row: tuple[Any, ...]) -> TaskRun:
@@ -111,6 +159,7 @@ def _row_to_task_run(row: tuple[Any, ...]) -> TaskRun:
         posted_message_id=row[5] or "",
         error=row[6] or "",
         provider=row[7] or "",
+        targets=_decode_targets(row[8]),
     )
 
 
@@ -122,7 +171,7 @@ def get_runs(task_id: str, limit: int = 20, db_path: Path | None = None) -> list
         _ensure_schema(conn)
         cursor = conn.execute(
             "SELECT task_id, fire_time, started_at, finished_at, status, "
-            "posted_message_id, error, provider "
+            "posted_message_id, error, provider, targets "
             "FROM task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT ?",
             (task_id, limit),
         )
@@ -143,7 +192,7 @@ def get_latest_finished_run(task_id: str, db_path: Path | None = None) -> TaskRu
         _ensure_schema(conn)
         cursor = conn.execute(
             "SELECT task_id, fire_time, started_at, finished_at, status, "
-            "posted_message_id, error, provider "
+            "posted_message_id, error, provider, targets "
             "FROM task_runs WHERE task_id = ? AND status IN (?, ?) "
             "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1",
             (task_id, TaskStatus.SUCCESS.value, TaskStatus.FAILED.value),

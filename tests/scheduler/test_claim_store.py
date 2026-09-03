@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from infrastructure.scheduling.scheduler.claim_store import (
     get_runs,
     try_claim,
 )
-from infrastructure.scheduling.scheduler.types import TaskStatus
+from infrastructure.scheduling.scheduler.types import DeliveryOutcome, Provider, TaskStatus
 
 
 @pytest.fixture()
@@ -192,3 +193,73 @@ class TestConcurrency:
         # Only one run record exists
         runs = get_runs("task1", db_path=db_path)
         assert len(runs) == 1
+
+
+class TestPerTargetOutcomes:
+    """Fan-out run history keeps one row per destination, in plan order."""
+
+    def test_target_outcomes_round_trip_in_the_order_written(self, db_path: Path) -> None:
+        try_claim("task1", "2026-01-01T09:00", db_path=db_path)
+        outcomes = (
+            DeliveryOutcome(
+                provider=Provider.INTERACTIVE_SHELL, ok=True, message_id="local:1", attempts=1
+            ),
+            DeliveryOutcome(
+                provider=Provider.SLACK,
+                chat_id="C123",
+                ok=False,
+                error="webhook missing",
+                attempts=3,
+            ),
+        )
+        complete_run(
+            "task1",
+            "2026-01-01T09:00",
+            status=TaskStatus.SUCCESS,
+            targets=outcomes,
+            db_path=db_path,
+        )
+
+        assert get_runs("task1", db_path=db_path)[0].targets == outcomes
+
+    def test_runs_without_target_outcomes_read_back_empty(self, db_path: Path) -> None:
+        try_claim("task1", "2026-01-01T09:00", db_path=db_path)
+        complete_run("task1", "2026-01-01T09:00", status=TaskStatus.SUCCESS, db_path=db_path)
+
+        assert get_runs("task1", db_path=db_path)[0].targets == ()
+
+    def test_database_created_before_the_targets_column_is_migrated(self, db_path: Path) -> None:
+        """An existing scheduler.db must gain the column instead of erroring."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                fire_time TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                posted_message_id TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                UNIQUE(task_id, fire_time)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO task_runs (task_id, fire_time, started_at, status) VALUES (?, ?, ?, ?)",
+            ("legacy", "2026-01-01T08:00", "2026-01-01T08:00:00+00:00", TaskStatus.SUCCESS.value),
+        )
+        conn.commit()
+        conn.close()
+
+        assert try_claim("task1", "2026-01-01T09:00", db_path=db_path) is True
+        complete_run(
+            "task1",
+            "2026-01-01T09:00",
+            status=TaskStatus.SUCCESS,
+            targets=(DeliveryOutcome(provider=Provider.SLACK, ok=True, message_id="ts_1"),),
+            db_path=db_path,
+        )
+
+        assert get_runs("legacy", db_path=db_path)[0].targets == ()
+        assert get_runs("task1", db_path=db_path)[0].targets[0].message_id == "ts_1"
