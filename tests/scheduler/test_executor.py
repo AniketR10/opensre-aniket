@@ -739,3 +739,67 @@ class TestDeliveryFanOutConcurrency:
         runs = get_runs(task.id)
         assert "carrier_pigeon" in runs[0].error
         assert runs[0].targets == ()
+
+
+@pytest.mark.usefixtures("_tmp_stores")
+class TestSelectiveRerun:
+    """execute_task's target_filter -- what --failed-only ultimately drives."""
+
+    def test_target_filter_delivers_only_to_the_named_destinations(self) -> None:
+        from infrastructure.scheduling.scheduler.types import Provider as P
+
+        adapters = _install_fake_bundle()
+        adapters[P.SLACK].result = (True, "", "ts_retry")
+        task = ScheduledTask(
+            id="test_rerun_filtered",
+            kind=TaskKind.WORK_ITEM_CHECKIN,
+            cron="0 9 * * *",
+            provider=P.SLACK,
+            chat_id="C123",
+            params={
+                "delivery_targets": json.dumps(
+                    [
+                        {"provider": "slack", "chat_id": "C123"},
+                        {"provider": "telegram", "chat_id": "-100123"},
+                    ]
+                )
+            },
+        )
+
+        with patch(
+            "infrastructure.scheduling.scheduler.executor.build_message",
+            return_value="Scheduled report",
+        ):
+            result = execute_task(
+                task,
+                "2026-01-01T09:00",
+                real_runners(),
+                target_filter=frozenset({(P.SLACK, "C123")}),
+            )
+
+        assert result is True
+        # Only the named destination is contacted -- the previously-succeeded
+        # Telegram destination is never touched by the rerun.
+        assert len(adapters[P.SLACK].calls) == 1
+        assert len(adapters[P.TELEGRAM].calls) == 0
+
+    def test_an_empty_target_filter_delivers_to_nobody(self) -> None:
+        adapters = _install_fake_bundle()
+        task = ScheduledTask(
+            id="test_rerun_nothing_to_do",
+            kind=TaskKind.MANUAL_LOOP,
+            cron="0 9 * * *",
+            provider=Provider.TELEGRAM,
+            chat_id="-100",
+        )
+
+        with patch(
+            "infrastructure.scheduling.scheduler.executor.build_message",
+            return_value="Scheduled report",
+        ):
+            result = execute_task(
+                task, "2026-01-01T09:00", real_runners(), target_filter=frozenset()
+            )
+
+        assert result is False
+        assert adapters[Provider.TELEGRAM].calls == []

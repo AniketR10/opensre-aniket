@@ -23,6 +23,24 @@ def db_path(tmp_path: Path) -> Path:
     return tmp_path / "scheduler.db"
 
 
+class _AlterFailsConnection:
+    """Wraps a real connection, failing only its ``ALTER TABLE`` statements.
+
+    ``sqlite3.Connection.execute`` cannot be monkeypatched directly (it is a
+    read-only C attribute), so this stands in for the connection when a test
+    needs a schema write to fail for a reason unrelated to the column already
+    existing (e.g. a genuine lock timeout).
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, *args: object) -> object:
+        if sql.strip().startswith("ALTER TABLE"):
+            raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args)
+
+
 class TestClaimStore:
     def test_first_claim_succeeds(self, db_path: Path) -> None:
         assert try_claim("task1", "2026-01-01T09:00", db_path=db_path) is True
@@ -271,11 +289,11 @@ class TestPerTargetOutcomes:
 
         Both check the column, see it missing, and only then does one of them
         commit its ``ALTER TABLE`` — so the other's own pre-check was already
-        stale by the time it runs its own ``ALTER TABLE``. Forcing the
-        pre-check to report "missing" (as it genuinely would have, at the
-        moment it ran) reproduces that window deterministically; a raw
-        sequential call can't, since the second call's pre-check would
-        correctly see the already-migrated schema and skip the write.
+        stale by the time it runs its own ``ALTER TABLE``. Forcing only the
+        pre-check to lie (report "missing" when it is not) reproduces that
+        stale window deterministically; a raw sequential call can't, since the
+        second call's pre-check would correctly see the already-migrated
+        schema and skip the write entirely.
         """
         conn = sqlite3.connect(str(db_path))
         conn.execute("""
@@ -296,6 +314,41 @@ class TestPerTargetOutcomes:
         # connection's own ALTER TABLE runs.
         conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
         conn.commit()
-        monkeypatch.setattr(claim_store, "_has_targets_column", lambda _conn: False)
+
+        real_has_column = claim_store._has_targets_column
+        calls = {"count": 0}
+
+        def _lie_on_first_call(check_conn: sqlite3.Connection) -> bool:
+            calls["count"] += 1
+            # Pre-check: stale, as it genuinely was at that moment. The
+            # post-failure recheck must see the truth or this test proves
+            # nothing about the recovery path.
+            return False if calls["count"] == 1 else real_has_column(check_conn)
+
+        monkeypatch.setattr(claim_store, "_has_targets_column", _lie_on_first_call)
 
         claim_store._add_missing_columns(conn)  # must not raise
+        assert calls["count"] == 2
+
+    def test_a_genuine_alter_failure_still_raises(self, db_path: Path) -> None:
+        """The recheck must not swallow a real failure (e.g. a lock timeout)
+        where the column genuinely never landed."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                fire_time TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                posted_message_id TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                UNIQUE(task_id, fire_time)
+            )
+        """)
+        conn.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            claim_store._add_missing_columns(_AlterFailsConnection(conn))

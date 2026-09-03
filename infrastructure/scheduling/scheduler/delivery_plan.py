@@ -29,6 +29,9 @@ from infrastructure.scheduling.scheduler.loop_constants import (
 )
 from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask
 
+#: A destination identity: what a run's targets are matched against on rerun.
+TargetKey = tuple[Provider, str]
+
 _DELIVERY_TARGETS_PARAM = "delivery_targets"
 
 
@@ -60,8 +63,25 @@ class DeliveryPlan:
     error: str = ""
 
 
-def resolve_delivery_plan(task: ScheduledTask) -> DeliveryPlan:
-    """Return the destinations ``task`` delivers to, or a plan carrying an error."""
+def resolve_delivery_plan(
+    task: ScheduledTask, *, only: frozenset[TargetKey] | None = None
+) -> DeliveryPlan:
+    """Return the destinations ``task`` delivers to, or a plan carrying an error.
+
+    ``only``, when given, narrows the plan to destinations whose
+    ``(provider, chat_id)`` is in that set -- a rerun retrying just the
+    destinations a previous run failed at, rather than every configured
+    destination again. An empty (but non-``None``) set means "narrow to
+    nothing", which resolves to an explicit no-op error rather than silently
+    delivering to everyone.
+    """
+    plan = _resolve(task)
+    if only is None or plan.error:
+        return plan
+    return _restrict(plan, only)
+
+
+def _resolve(task: ScheduledTask) -> DeliveryPlan:
     explicit = _explicit_targets(task)
     if explicit:
         return DeliveryPlan(targets=explicit, fanned_out=True)
@@ -74,6 +94,14 @@ def resolve_delivery_plan(task: ScheduledTask) -> DeliveryPlan:
         return DeliveryPlan(targets=targets, fanned_out=True)
 
     return DeliveryPlan(targets=(DeliveryTarget(task.provider, task.chat_id, task),))
+
+
+def _restrict(plan: DeliveryPlan, only: frozenset[TargetKey]) -> DeliveryPlan:
+    """Narrow ``plan`` to the destinations named in ``only``, keeping order."""
+    kept = tuple(target for target in plan.targets if (target.provider, target.chat_id) in only)
+    if not kept:
+        return DeliveryPlan(error="No matching destinations to retry")
+    return DeliveryPlan(targets=kept, fanned_out=plan.fanned_out)
 
 
 def _explicit_targets(task: ScheduledTask) -> tuple[DeliveryTarget, ...]:
@@ -174,5 +202,6 @@ def _dedupe(targets: Iterable[DeliveryTarget]) -> tuple[DeliveryTarget, ...]:
 __all__ = [
     "DeliveryPlan",
     "DeliveryTarget",
+    "TargetKey",
     "resolve_delivery_plan",
 ]

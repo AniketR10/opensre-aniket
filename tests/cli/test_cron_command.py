@@ -160,3 +160,64 @@ def test_cron_add_still_requires_chat_id_for_telegram() -> None:
     )
     assert result.exit_code == 2
     assert "--chat-id is required" in result.output
+
+
+def test_cron_run_failed_only_flag_is_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--failed-only`` must reach ``run_task_now`` as ``only_failed=True``."""
+    from infrastructure.scheduling.scheduler.types import ScheduledTask
+
+    task = ScheduledTask(
+        id="t1", kind=TaskKind.MANUAL_LOOP, cron="0 9 * * *", provider=Provider.TELEGRAM
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_run_task_now(task_id: str, _runners: object, *, only_failed: bool = False) -> bool:
+        calls.append({"task_id": task_id, "only_failed": only_failed})
+        return True
+
+    monkeypatch.setattr("bootstrap.process.configure_process", lambda _profile: None)
+    monkeypatch.setattr("bootstrap.adapters.scheduler_runners", lambda: object())
+    monkeypatch.setattr("infrastructure.scheduling.scheduler.store.get_task", lambda _task_id: task)
+    monkeypatch.setattr(
+        "infrastructure.scheduling.scheduler.runner.run_task_now", _fake_run_task_now
+    )
+    monkeypatch.setattr(
+        "infrastructure.scheduling.scheduler.operation_log.record_scheduler_task_operation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cron_command, ["run", "t1", "--failed-only"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{"task_id": "t1", "only_failed": True}]
+
+
+def test_cron_run_defaults_to_a_full_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from infrastructure.scheduling.scheduler.types import ScheduledTask
+
+    task = ScheduledTask(
+        id="t1", kind=TaskKind.MANUAL_LOOP, cron="0 9 * * *", provider=Provider.TELEGRAM
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_run_task_now(task_id: str, _runners: object, *, only_failed: bool = False) -> bool:
+        calls.append({"task_id": task_id, "only_failed": only_failed})
+        return True
+
+    monkeypatch.setattr("bootstrap.process.configure_process", lambda _profile: None)
+    monkeypatch.setattr("bootstrap.adapters.scheduler_runners", lambda: object())
+    monkeypatch.setattr("infrastructure.scheduling.scheduler.store.get_task", lambda _task_id: task)
+    monkeypatch.setattr(
+        "infrastructure.scheduling.scheduler.runner.run_task_now", _fake_run_task_now
+    )
+    monkeypatch.setattr(
+        "infrastructure.scheduling.scheduler.operation_log.record_scheduler_task_operation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cron_command, ["run", "t1"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{"task_id": "t1", "only_failed": False}]

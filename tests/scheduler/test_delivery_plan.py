@@ -138,3 +138,39 @@ class TestLoopSlackChannel:
         )
 
         assert plan.targets[0].chat_id == "C0123ABCD"
+
+
+class TestOnlyFilter:
+    """Narrowing a plan to a rerun's failed destinations."""
+
+    def test_only_narrows_to_the_matching_destinations(self) -> None:
+        task = _task(
+            params={
+                "delivery_targets": json.dumps(
+                    [
+                        {"provider": "slack", "chat_id": "C1"},
+                        {"provider": "telegram", "chat_id": "-100"},
+                    ]
+                )
+            }
+        )
+
+        plan = resolve_delivery_plan(task, only=frozenset({(Provider.TELEGRAM, "-100")}))
+
+        assert [(t.provider, t.chat_id) for t in plan.targets] == [(Provider.TELEGRAM, "-100")]
+        assert plan.fanned_out is True
+
+    def test_only_matching_nothing_is_an_explicit_error_not_a_full_send(self) -> None:
+        task = _task(provider=Provider.SLACK, chat_id="C123")
+
+        plan = resolve_delivery_plan(task, only=frozenset())
+
+        assert plan.targets == ()
+        assert plan.error
+
+    def test_only_is_ignored_when_the_base_plan_already_has_an_error(self) -> None:
+        task = _task(params={LOOP_CHANNELS_PARAM: "carrier_pigeon"})
+
+        plan = resolve_delivery_plan(task, only=frozenset({(Provider.SLACK, "")}))
+
+        assert "carrier_pigeon" in plan.error

@@ -32,7 +32,7 @@ from infrastructure.scheduling.scheduler.store import (
     list_tasks,
     update_task,
 )
-from infrastructure.scheduling.scheduler.types import ScheduledTask, TaskStatus
+from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskStatus
 
 logger = logging.getLogger(__name__)
 TaskFilter = Callable[[ScheduledTask], bool]
@@ -366,18 +366,43 @@ def start_scheduler(runners: SchedulerRunners, *, idle_when_empty: bool = False)
         record_scheduler_service_operation("scheduler_stopped", task_count=enabled_count)
 
 
-def run_task_now(task_id: str, runners: SchedulerRunners) -> bool:
+def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool = False) -> bool:
     """Execute a task immediately (ad-hoc one-shot for debugging).
 
     Uses the current time with seconds precision as fire_time so it does
     not conflict with scheduled runs (which use minute precision).
+
+    ``only_failed=True`` retries only the destinations the most recently
+    completed run failed at, instead of delivering to every configured
+    destination again -- recovering a partial failure without re-posting to
+    channels that already received the message. Falls back to a normal full
+    run when there is no per-target history to narrow from (no prior run, or
+    one recorded before per-target outcomes were tracked).
     """
     task = get_task(task_id)
     if task is None:
         return False
 
     fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return execute_task(task, fire_time, runners)
+    target_filter = _failed_targets(task_id) if only_failed else None
+    return execute_task(task, fire_time, runners, target_filter=target_filter)
+
+
+def _failed_targets(task_id: str) -> frozenset[tuple[Provider, str]] | None:
+    """Destinations the most recently completed run failed at.
+
+    ``None`` means there is no per-target history to narrow from -- the
+    caller should run normally. An empty (non-``None``) result means the last
+    run had no failures, so a ``--failed-only`` rerun has nothing to retry.
+    """
+    from infrastructure.scheduling.scheduler.claim_store import get_latest_finished_run
+
+    run = get_latest_finished_run(task_id)
+    if run is None or not run.targets:
+        return None
+    return frozenset(
+        (outcome.provider, outcome.chat_id) for outcome in run.targets if not outcome.ok
+    )
 
 
 __all__ = [

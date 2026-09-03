@@ -6,7 +6,11 @@ import logging
 
 from infrastructure.scheduling.scheduler.claim_store import complete_run, try_claim
 from infrastructure.scheduling.scheduler.delivery_bundle import resolve_delivery_adapter
-from infrastructure.scheduling.scheduler.delivery_plan import DeliveryTarget, resolve_delivery_plan
+from infrastructure.scheduling.scheduler.delivery_plan import (
+    DeliveryTarget,
+    TargetKey,
+    resolve_delivery_plan,
+)
 from infrastructure.scheduling.scheduler.fanout import FanOutResult, deliver_plan
 from infrastructure.scheduling.scheduler.loop_constants import LOOP_CHANNELS_PARAM
 from infrastructure.scheduling.scheduler.operation_log import record_scheduler_execution_operation
@@ -26,6 +30,8 @@ def execute_task(
     task: ScheduledTask,
     fire_time: str,
     runners: SchedulerRunners,
+    *,
+    target_filter: frozenset[TargetKey] | None = None,
 ) -> bool:
     """Execute a scheduled task with claim-based dedup.
 
@@ -33,6 +39,9 @@ def execute_task(
         task: The scheduled task definition.
         fire_time: The canonical fire time string (UTC, minute-precision) from the
             scheduler trigger, used as the dedup key.
+        target_filter: When given, narrows delivery to destinations whose
+            ``(provider, chat_id)`` is in the set -- a rerun retrying only the
+            destinations a previous run failed at.
 
     Returns:
         True if the task was executed and delivered successfully.
@@ -101,7 +110,7 @@ def execute_task(
         return True
 
     # Fan out to every destination the task resolves to, concurrently.
-    result = _deliver_all(task, message)
+    result = _deliver_all(task, message, target_filter=target_filter)
     message_id = result.message_id()
     error = result.error()
 
@@ -185,9 +194,12 @@ def _deliver_single(target: DeliveryTarget, message: str) -> tuple[bool, str, st
     return adapter.deliver(target.task, message)
 
 
-def _deliver_all(task: ScheduledTask, message: str) -> FanOutResult:
+def _deliver_all(
+    task: ScheduledTask, message: str, *, target_filter: frozenset[TargetKey] | None = None
+) -> FanOutResult:
     """Resolve ``task``'s destinations once and deliver to all of them at once."""
-    return deliver_plan(resolve_delivery_plan(task), message, _deliver_single)
+    plan = resolve_delivery_plan(task, only=target_filter)
+    return deliver_plan(plan, message, _deliver_single)
 
 
 def _target_outcome_summary(result: FanOutResult) -> tuple[str, ...]:

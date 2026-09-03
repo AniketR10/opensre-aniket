@@ -199,7 +199,14 @@ def cron_remove(task_id: str) -> None:
 
 @cron_command.command(name="run")
 @click.argument("task_id")
-def cron_run(task_id: str) -> None:
+@click.option(
+    "--failed-only",
+    is_flag=True,
+    default=False,
+    help="Retry only the destinations the most recent run failed at, instead of "
+    "delivering to every configured destination again.",
+)
+def cron_run(task_id: str, failed_only: bool) -> None:
     """Run a scheduled task immediately (ad-hoc one-shot for debugging)."""
     from bootstrap.adapters import scheduler_runners
     from bootstrap.process import SCHEDULED_COMMAND_PROFILE, configure_process
@@ -218,9 +225,9 @@ def cron_run(task_id: str) -> None:
     record_scheduler_task_operation(
         "scheduled_task_run_requested",
         task,
-        extra={"command": "cron_run"},
+        extra={"command": "cron_run", "failed_only": failed_only},
     )
-    success = run_task_now(task_id, scheduler_runners())
+    success = run_task_now(task_id, scheduler_runners(), only_failed=failed_only)
     if success:
         _console.print("[green]Done.[/green]")
     else:

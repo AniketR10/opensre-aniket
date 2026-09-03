@@ -64,16 +64,20 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a database was first created.
 
     Two processes can both see the column missing before either commits its
-    ``ALTER TABLE``: the second one blocks on the writer lock, then runs
-    against the now-migrated schema and fails with "duplicate column" rather
-    than a real error — that outcome means the migration already happened.
+    ``ALTER TABLE``. The loser's own ``ALTER TABLE`` then fails — either with
+    "duplicate column" if the winner's write had already landed, or with a
+    lock-timeout if it is still in flight and outlasts ``busy_timeout``.
+    Rechecking the schema after any failure (rather than matching the error
+    text) covers both: if the column is there now, the migration succeeded
+    one way or another and the error is not this connection's problem: a
+    genuine failure, one where the column is still missing, still raises.
     """
     if _has_targets_column(conn):
         return
     try:
         conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
-    except sqlite3.OperationalError as exc:
-        if "duplicate column" not in str(exc).lower():
+    except sqlite3.OperationalError:
+        if not _has_targets_column(conn):
             raise
 
 
