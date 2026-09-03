@@ -302,7 +302,7 @@ class TestRunTaskNow:
             "infrastructure.scheduling.scheduler.runner.get_task", lambda _task_id: task
         )
         monkeypatch.setattr(
-            "infrastructure.scheduling.scheduler.claim_store.get_latest_finished_run",
+            "infrastructure.scheduling.scheduler.claim_store.get_latest_targeted_run",
             lambda _task_id: None,
         )
 
@@ -336,7 +336,7 @@ class TestRunTaskNow:
             "infrastructure.scheduling.scheduler.runner.get_task", lambda _task_id: task
         )
         monkeypatch.setattr(
-            "infrastructure.scheduling.scheduler.claim_store.get_latest_finished_run",
+            "infrastructure.scheduling.scheduler.claim_store.get_latest_targeted_run",
             lambda _task_id: last_run,
         )
 
@@ -366,7 +366,7 @@ class TestRunTaskNow:
             "infrastructure.scheduling.scheduler.runner.get_task", lambda _task_id: task
         )
         monkeypatch.setattr(
-            "infrastructure.scheduling.scheduler.claim_store.get_latest_finished_run",
+            "infrastructure.scheduling.scheduler.claim_store.get_latest_targeted_run",
             lambda _task_id: last_run,
         )
 

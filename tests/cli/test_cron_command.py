@@ -262,7 +262,7 @@ def _patch_cron_run_deps(
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "infrastructure.scheduling.scheduler.claim_store.get_latest_finished_run",
+        "infrastructure.scheduling.scheduler.claim_store.get_latest_targeted_run",
         lambda _tid: latest_run,
     )
     return calls

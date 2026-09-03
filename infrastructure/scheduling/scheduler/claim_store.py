@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "scheduler.db"
 
-#: Attempts to add a column when a competing process may hold the write lock.
-#: Each attempt re-reads the schema first, so a winner's commit ends the loop.
-_MIGRATION_ATTEMPTS = 3
+#: How long to keep retrying a column add while a competing process holds the
+#: write lock. Each attempt re-reads the schema first, so a winner's commit
+#: ends the loop immediately; this only bounds how long a *stuck* writer is
+#: tolerated before the real error surfaces.
+_MIGRATION_TIMEOUT_SECONDS = 30.0
 _MIGRATION_RETRY_DELAY_SECONDS = 0.1
 
 
@@ -76,10 +78,16 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     (rather than matching the error text) covers the first case, and retrying
     covers the second: at timeout the winner's column is not visible yet, so
     a single recheck would wrongly conclude the migration failed. Each retry
-    re-reads the schema first, so the loser exits as soon as the winner's
-    commit lands. A failure that outlives every attempt still raises.
+    re-reads the schema first, so the loser returns the moment the winner's
+    commit lands.
+
+    Adding a column to this table is sub-millisecond work, so a writer still
+    holding the lock after ``_MIGRATION_TIMEOUT_SECONDS`` is stuck rather than
+    slow. Raising then is deliberate: retrying forever would hide a wedged
+    database behind a scheduler that never fires.
     """
-    for remaining in reversed(range(_MIGRATION_ATTEMPTS)):
+    deadline = time.monotonic() + _MIGRATION_TIMEOUT_SECONDS
+    while True:
         if _has_targets_column(conn):
             return
         try:
@@ -87,7 +95,7 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             if _has_targets_column(conn):
                 return
-            if not remaining:
+            if time.monotonic() >= deadline:
                 raise
             time.sleep(_MIGRATION_RETRY_DELAY_SECONDS)
         else:
@@ -234,6 +242,33 @@ def get_latest_finished_run(task_id: str, db_path: Path | None = None) -> TaskRu
         conn.close()
 
 
+def get_latest_targeted_run(task_id: str, db_path: Path | None = None) -> TaskRun | None:
+    """Return the most recent completed run that recorded per-target outcomes.
+
+    Skips rows with no per-target history — a run that failed before delivery
+    (message build) or one whose retry matched no destination. Those carry no
+    information about what was delivered, so letting one shadow an earlier
+    partial failure would make a ``--failed-only`` retry fall back to
+    delivering everywhere, re-posting where the message already landed.
+    """
+    path = db_path or _default_db_path()
+    conn = _connect(path)
+    try:
+        _ensure_schema(conn)
+        cursor = conn.execute(
+            "SELECT task_id, fire_time, started_at, finished_at, status, "
+            "posted_message_id, error, provider, targets "
+            "FROM task_runs WHERE task_id = ? AND status IN (?, ?) "
+            "AND targets IS NOT NULL AND targets != '' "
+            "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1",
+            (task_id, TaskStatus.SUCCESS.value, TaskStatus.FAILED.value),
+        )
+        row = cursor.fetchone()
+        return _row_to_task_run(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def delete_runs(task_id: str, db_path: Path | None = None) -> int:
     """Delete all task-run records for a given task ID.
 
@@ -260,6 +295,7 @@ __all__ = [
     "complete_run",
     "delete_runs",
     "get_latest_finished_run",
+    "get_latest_targeted_run",
     "get_runs",
     "try_claim",
 ]

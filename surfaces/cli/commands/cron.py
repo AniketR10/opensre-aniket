@@ -206,10 +206,10 @@ def _warn_if_rerun_duplicates(task_id: str) -> None:
     ``cron run`` is also the way to trigger a task on demand, and that has to
     keep reaching every destination.
     """
-    from infrastructure.scheduling.scheduler.claim_store import get_latest_finished_run
+    from infrastructure.scheduling.scheduler.claim_store import get_latest_targeted_run
 
-    run = get_latest_finished_run(task_id)
-    if run is None or not run.targets:
+    run = get_latest_targeted_run(task_id)
+    if run is None:
         return
     delivered = [outcome for outcome in run.targets if outcome.ok]
     if not delivered or len(delivered) == len(run.targets):

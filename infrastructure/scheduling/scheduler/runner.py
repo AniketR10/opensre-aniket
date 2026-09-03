@@ -389,16 +389,21 @@ def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool =
 
 
 def _failed_targets(task_id: str) -> frozenset[tuple[Provider, str]] | None:
-    """Destinations the most recently completed run failed at.
+    """Destinations the most recent run with per-target history failed at.
 
-    ``None`` means there is no per-target history to narrow from -- the
-    caller should run normally. An empty (non-``None``) result means the last
-    run had no failures, so a ``--failed-only`` rerun has nothing to retry.
+    ``None`` means there is no per-target history at all to narrow from -- the
+    caller should run normally. An empty (non-``None``) result means that run
+    had no failures, so a ``--failed-only`` rerun has nothing to retry.
+
+    Reads the latest run that actually recorded outcomes rather than simply
+    the latest run: a build failure, or a retry that matched no destination,
+    records none, and treating that as "no history" would widen the next
+    retry back to every destination.
     """
-    from infrastructure.scheduling.scheduler.claim_store import get_latest_finished_run
+    from infrastructure.scheduling.scheduler.claim_store import get_latest_targeted_run
 
-    run = get_latest_finished_run(task_id)
-    if run is None or not run.targets:
+    run = get_latest_targeted_run(task_id)
+    if run is None:
         return None
     return frozenset(
         (outcome.provider, outcome.chat_id) for outcome in run.targets if not outcome.ok

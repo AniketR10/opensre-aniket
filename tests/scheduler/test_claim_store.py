@@ -12,6 +12,7 @@ from infrastructure.scheduling.scheduler.claim_store import (
     complete_run,
     delete_runs,
     get_latest_finished_run,
+    get_latest_targeted_run,
     get_runs,
     try_claim,
 )
@@ -373,9 +374,12 @@ class TestPerTargetOutcomes:
         # Pre-check, post-timeout recheck, then the retry's own pre-check.
         assert checks["count"] == 3
 
-    def test_a_genuine_alter_failure_still_raises(self, db_path: Path) -> None:
-        """The recheck must not swallow a real failure (e.g. a lock timeout)
-        where the column genuinely never landed."""
+    def test_a_genuine_alter_failure_still_raises(
+        self, db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A writer stuck past the budget surfaces the real error rather than
+        retrying forever."""
+        monkeypatch.setattr(claim_store, "_MIGRATION_TIMEOUT_SECONDS", 0.2)
         conn = sqlite3.connect(str(db_path))
         conn.execute("""
             CREATE TABLE task_runs (
@@ -395,3 +399,52 @@ class TestPerTargetOutcomes:
 
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             claim_store._add_missing_columns(_AlterFailsConnection(conn))
+
+
+class TestLatestTargetedRun:
+    """``--failed-only`` must not be widened by a run that recorded no targets."""
+
+    def _finish(
+        self,
+        db_path: Path,
+        fire_time: str,
+        *,
+        targets: tuple[DeliveryOutcome, ...],
+        status: TaskStatus = TaskStatus.SUCCESS,
+    ) -> None:
+        try_claim("task1", fire_time, db_path=db_path)
+        complete_run("task1", fire_time, status=status, targets=targets, db_path=db_path)
+
+    def test_a_later_run_without_targets_does_not_shadow_the_partial_failure(
+        self, db_path: Path
+    ) -> None:
+        """The bug: a retry matching nothing (or a build failure) records no
+        outcomes, and treating that as "no history" sends everywhere again."""
+        partial = (
+            DeliveryOutcome(provider=Provider.SLACK, chat_id="C1", ok=True, message_id="ts_1"),
+            DeliveryOutcome(provider=Provider.TELEGRAM, chat_id="-100", ok=False, error="no token"),
+        )
+        self._finish(db_path, "2026-01-01T09:00", targets=partial)
+        # A --failed-only retry that matched no destination, recorded after it.
+        self._finish(db_path, "2026-01-01T09:05", targets=(), status=TaskStatus.FAILED)
+
+        run = get_latest_targeted_run("task1", db_path=db_path)
+
+        assert run is not None
+        assert run.targets == partial
+
+    def test_no_run_with_targets_returns_none(self, db_path: Path) -> None:
+        self._finish(db_path, "2026-01-01T09:00", targets=(), status=TaskStatus.FAILED)
+
+        assert get_latest_targeted_run("task1", db_path=db_path) is None
+
+    def test_the_newest_targeted_run_wins(self, db_path: Path) -> None:
+        older = (DeliveryOutcome(provider=Provider.SLACK, chat_id="C1", ok=False, error="old"),)
+        newer = (DeliveryOutcome(provider=Provider.SLACK, chat_id="C1", ok=True, message_id="ok"),)
+        self._finish(db_path, "2026-01-01T09:00", targets=older)
+        self._finish(db_path, "2026-01-01T09:05", targets=newer)
+
+        run = get_latest_targeted_run("task1", db_path=db_path)
+
+        assert run is not None
+        assert run.targets == newer
