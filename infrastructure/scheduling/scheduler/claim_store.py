@@ -29,6 +29,10 @@ _DB_FILENAME = "scheduler.db"
 _MIGRATION_TIMEOUT_SECONDS = 30.0
 _MIGRATION_RETRY_DELAY_SECONDS = 0.1
 
+#: How far back to look for a run with readable per-target history before
+#: concluding there is none to narrow a retry to.
+_TARGETED_RUN_SCAN_LIMIT = 20
+
 
 def _default_db_path() -> Path:
     return OPENSRE_HOME_DIR / _DB_FILENAME
@@ -245,11 +249,16 @@ def get_latest_finished_run(task_id: str, db_path: Path | None = None) -> TaskRu
 def get_latest_targeted_run(task_id: str, db_path: Path | None = None) -> TaskRun | None:
     """Return the most recent completed run that recorded per-target outcomes.
 
-    Skips rows with no per-target history — a run that failed before delivery
-    (message build) or one whose retry matched no destination. Those carry no
-    information about what was delivered, so letting one shadow an earlier
-    partial failure would make a ``--failed-only`` retry fall back to
-    delivering everywhere, re-posting where the message already landed.
+    Skips runs with no usable per-target history — one that failed before
+    delivery (message build), one whose retry matched no destination, or one
+    whose stored outcomes cannot be decoded. Those carry no information about
+    what was delivered, so letting one shadow an earlier partial failure would
+    strand a ``--failed-only`` retry: either widened back to every destination
+    (re-posting where the message already landed) or narrowed to nothing.
+
+    Emptiness is judged after decoding, not by the raw column: a non-empty but
+    unreadable value decodes to no outcomes, so a SQL-level check alone would
+    let it shadow a readable older run.
     """
     path = db_path or _default_db_path()
     conn = _connect(path)
@@ -260,11 +269,19 @@ def get_latest_targeted_run(task_id: str, db_path: Path | None = None) -> TaskRu
             "posted_message_id, error, provider, targets "
             "FROM task_runs WHERE task_id = ? AND status IN (?, ?) "
             "AND targets IS NOT NULL AND targets != '' "
-            "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1",
-            (task_id, TaskStatus.SUCCESS.value, TaskStatus.FAILED.value),
+            "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT ?",
+            (
+                task_id,
+                TaskStatus.SUCCESS.value,
+                TaskStatus.FAILED.value,
+                _TARGETED_RUN_SCAN_LIMIT,
+            ),
         )
-        row = cursor.fetchone()
-        return _row_to_task_run(row) if row is not None else None
+        for row in cursor.fetchall():
+            run = _row_to_task_run(row)
+            if run.targets:
+                return run
+        return None
     finally:
         conn.close()
 

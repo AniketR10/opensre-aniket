@@ -448,3 +448,40 @@ class TestLatestTargetedRun:
 
         assert run is not None
         assert run.targets == newer
+
+    def test_an_unreadable_later_run_does_not_shadow_the_partial_failure(
+        self, db_path: Path
+    ) -> None:
+        """A corrupt outcomes column is non-empty in SQL but decodes to nothing.
+
+        Letting it win would hand ``--failed-only`` an empty filter, so the
+        retry would deliver nowhere instead of to the destinations that failed.
+        """
+        partial = (
+            DeliveryOutcome(provider=Provider.SLACK, chat_id="C1", ok=True, message_id="ts_1"),
+            DeliveryOutcome(provider=Provider.TELEGRAM, chat_id="-100", ok=False, error="no token"),
+        )
+        self._finish(db_path, "2026-01-01T09:00", targets=partial)
+        self._finish(db_path, "2026-01-01T09:05", targets=(), status=TaskStatus.FAILED)
+        # Corrupt the newer row's history behind the encoder's back.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE task_runs SET targets = ? WHERE task_id = ? AND fire_time = ?",
+            ("{not json", "task1", "2026-01-01T09:05"),
+        )
+        conn.commit()
+        conn.close()
+
+        run = get_latest_targeted_run("task1", db_path=db_path)
+
+        assert run is not None
+        assert run.targets == partial
+
+    def test_only_unreadable_history_returns_none(self, db_path: Path) -> None:
+        self._finish(db_path, "2026-01-01T09:00", targets=(), status=TaskStatus.FAILED)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("UPDATE task_runs SET targets = ? WHERE task_id = ?", ("[[[", "task1"))
+        conn.commit()
+        conn.close()
+
+        assert get_latest_targeted_run("task1", db_path=db_path) is None
