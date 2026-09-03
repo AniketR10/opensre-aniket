@@ -56,11 +56,25 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _has_targets_column(conn: sqlite3.Connection) -> bool:
+    return "targets" in {str(row[1]) for row in conn.execute("PRAGMA table_info(task_runs)")}
+
+
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
-    """Add columns introduced after a database was first created."""
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(task_runs)")}
-    if "targets" not in existing:
+    """Add columns introduced after a database was first created.
+
+    Two processes can both see the column missing before either commits its
+    ``ALTER TABLE``: the second one blocks on the writer lock, then runs
+    against the now-migrated schema and fails with "duplicate column" rather
+    than a real error — that outcome means the migration already happened.
+    """
+    if _has_targets_column(conn):
+        return
+    try:
         conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
 
 
 def try_claim(task_id: str, fire_time: str, db_path: Path | None = None) -> bool:

@@ -263,3 +263,39 @@ class TestPerTargetOutcomes:
 
         assert get_runs("legacy", db_path=db_path)[0].targets == ()
         assert get_runs("task1", db_path=db_path)[0].targets[0].message_id == "ts_1"
+
+    def test_a_concurrent_migration_landing_first_does_not_raise(
+        self, db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reproduces the race two processes hit on a legacy database.
+
+        Both check the column, see it missing, and only then does one of them
+        commit its ``ALTER TABLE`` — so the other's own pre-check was already
+        stale by the time it runs its own ``ALTER TABLE``. Forcing the
+        pre-check to report "missing" (as it genuinely would have, at the
+        moment it ran) reproduces that window deterministically; a raw
+        sequential call can't, since the second call's pre-check would
+        correctly see the already-migrated schema and skip the write.
+        """
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                fire_time TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                posted_message_id TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                UNIQUE(task_id, fire_time)
+            )
+        """)
+        # A concurrent connection's migration already landed by the time this
+        # connection's own ALTER TABLE runs.
+        conn.execute("ALTER TABLE task_runs ADD COLUMN targets TEXT DEFAULT ''")
+        conn.commit()
+        monkeypatch.setattr(claim_store, "_has_targets_column", lambda _conn: False)
+
+        claim_store._add_missing_columns(conn)  # must not raise
