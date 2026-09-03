@@ -20,7 +20,6 @@ from surfaces.cli.commands.general import (
     version_command,
 )
 from surfaces.cli.commands.guardrails import guardrails
-from surfaces.cli.commands.hermes import hermes_command
 from surfaces.cli.commands.integrations import integrations
 from surfaces.cli.commands.messaging import messaging
 from surfaces.cli.commands.onboard import onboard
@@ -43,7 +42,6 @@ _COMMANDS: tuple[click.Command, ...] = (
     guardrails,
     fleet,
     messaging,
-    hermes_command,
     cron_command,
     sentry_command,
     posthog_command,

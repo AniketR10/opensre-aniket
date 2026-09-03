@@ -53,7 +53,7 @@ TELEGRAM_ALLOWED_USERS=123456789   # for two-way gateway chat
 | `TELEGRAM_ALLOWED_USERS` | Comma-separated **numeric** user ids allowed for gateway chat. |
 
 <Note>
-**Credential resolution.** Every Telegram delivery surface — the scheduler, `/watchdog`, `/hermes watch`, and `/watch` — resolves the bot token the same way: integration store first, then `resolve_env_credential("TELEGRAM_BOT_TOKEN")` (process env, then the credentials file). Chat id is non-secret: `--chat-id` → store `default_chat_id` → `TELEGRAM_DEFAULT_CHAT_ID` env (plain `os.getenv`).
+**Credential resolution.** Every Telegram delivery surface — the scheduler, `/watchdog`, and `/watch` — resolves the bot token the same way: integration store first, then `resolve_env_credential("TELEGRAM_BOT_TOKEN")` (process env, then the credentials file). Chat id is non-secret: `--chat-id` → store `default_chat_id` → `TELEGRAM_DEFAULT_CHAT_ID` env (plain `os.getenv`).
 </Note>
 
 ## Credentials
@@ -231,14 +231,6 @@ opensre watchdog --pid <pid> [--max-cpu N] [--max-runtime D] [--max-rss S]
 ```
 
 Interactive shell: `/watch`, `/watches`, `/unwatch`, `/watchdog`.
-
-#### Hermes incident escalation
-
-```bash
-opensre hermes watch
-```
-
-See [Hermes](/hermes).
 
 ## Verify
 

@@ -969,7 +969,6 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "get_github_repository_tree",
         "get_gitlab_file",
         "get_groundcover_query_reference",
-        "get_hermes_logs",
         "get_host_metrics",
         "get_jenkins_build_log",
         "get_jenkins_pipeline_stages",

@@ -201,10 +201,6 @@ MCP_BY_COMMAND: dict[str, _SlashMcpFields] = {
         "User asks for available commands or help using /help",
         anti_examples=("User asks a procedural docs question (answer directly)",),
     ),
-    "/hermes": _mcp(
-        "Live-tail Hermes logs and send detected incidents to Telegram. Subcommand: watch.",
-        "User asks to watch Hermes logs or Hermes incident escalation",
-    ),
     "/history": _mcp(
         "Manage persisted command history: clear, off, on, retention <N>.",
         "User asks to clear, disable, or configure command history persistence",

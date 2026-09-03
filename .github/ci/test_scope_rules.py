@@ -53,7 +53,6 @@ RULES: tuple[PathRule, ...] = (
     # Specific sub-packages before their parent
     PathRule("integrations/llm_cli/", ("tests/integrations/llm_cli/",)),
     PathRule("integrations/opensre/", ("tests/integrations/opensre/",)),
-    PathRule("integrations/hermes/", ("tests/hermes/",)),
     PathRule(
         "integrations/alertmanager/",
         ("tests/integrations/alertmanager/", "tests/e2e/alertmanager/"),
@@ -230,13 +229,6 @@ RULES: tuple[PathRule, ...] = (
         (
             "tests/integrations/test_betterstack.py",
             "tests/tools/test_betterstack_logs_tool.py",
-        ),
-    ),
-    PathRule(
-        "integrations/hermes/tools/",
-        (
-            "tests/tools/test_hermes_logs_tool.py",
-            "tests/tools/test_hermes_session_evidence_tool.py",
         ),
     ),
     PathRule(

@@ -557,6 +557,40 @@ def test_integrations_list_and_show_smoke(cli_sandbox: CliSandbox) -> None:
     assert '"app_key": "dd-a****"' in show_result.stdout
 
 
+def test_integrations_show_and_remove_retired_service_smoke(
+    cli_sandbox: CliSandbox,
+) -> None:
+    service = "retired-observer"
+    cli_sandbox.seed_integrations(
+        [
+            {
+                "id": "retired-local",
+                "service": service,
+                "status": "active",
+                "credentials": {"api_key": "retired-secret"},
+            }
+        ]
+    )
+
+    show_result = _run_cli(cli_sandbox, "integrations", "show", service)
+    remove_result = _run_cli(
+        cli_sandbox,
+        "--yes",
+        "integrations",
+        "remove",
+        service,
+    )
+    list_result = _run_cli(cli_sandbox, "integrations", "list")
+
+    assert show_result.exit_code == 0
+    assert f'"service": "{service}"' in show_result.stdout
+    assert '"api_key": "reti****"' in show_result.stdout
+    assert remove_result.exit_code == 0
+    assert f"Removed '{service}'." in remove_result.stdout
+    assert list_result.exit_code == 0
+    assert "No integrations." in list_result.stdout
+
+
 def test_integrations_verify_datadog_smoke(cli_sandbox: CliSandbox) -> None:
     cli_sandbox.seed_integrations(
         [

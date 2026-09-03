@@ -10,7 +10,6 @@ from config.constants.google_docs import (
     GOOGLE_DRIVE_FOLDER_ID_ENV,
 )
 from config.constants.helm import OSRE_HELM_INTEGRATION_ENV
-from config.constants.hermes import HERMES_LOG_PATH_ENV
 from config.constants.new_relic import (
     NEW_RELIC_ACCOUNT_ID_ENV,
     NEW_RELIC_API_KEY_ENV,
@@ -141,7 +140,6 @@ def load_env_integration_services() -> list[str]:
         ),
     )
     add("helm", os.getenv(OSRE_HELM_INTEGRATION_ENV, "").strip().lower() in {"1", "true", "yes"})
-    add("hermes", _env_is_set(HERMES_LOG_PATH_ENV))
     add(
         "railway",
         _env_is_set("RAILWAY_TOKEN")

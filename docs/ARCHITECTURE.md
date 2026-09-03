@@ -128,7 +128,7 @@ responsibility:
   (`client.py`), the store/catalog that resolves credentials, and
   integration-local helpers. One folder per vendor (`integrations/datadog`,
   `integrations/grafana`, `integrations/github`, …) plus cross-cutting pieces
-  like `integrations/hermes` and `integrations/llm_cli`.
+  like `integrations/llm_cli`.
 - **`tools/`** — the **agent-callable** boundary: every `@tool(...)` function
   and `BaseTool` subclass, the tool registry, framework subsystems
   (`tools/interactive_shell`), `tools/system/` for

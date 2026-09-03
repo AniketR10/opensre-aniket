@@ -583,10 +583,6 @@
     "seconds": 0.044,
     "tests": 7
   },
-  "tests/cli/test_hermes_command.py": {
-    "seconds": 0.122,
-    "tests": 10
-  },
   "tests/cli/test_install_matrix.py": {
     "seconds": 11.116,
     "tests": 18
@@ -1639,42 +1635,6 @@
     "seconds": 1.491,
     "tests": 2
   },
-  "tests/hermes/test_agent.py": {
-    "seconds": 1.192,
-    "tests": 9
-  },
-  "tests/hermes/test_classifier.py": {
-    "seconds": 0.33,
-    "tests": 17
-  },
-  "tests/hermes/test_correlating_sink.py": {
-    "seconds": 0.103,
-    "tests": 11
-  },
-  "tests/hermes/test_correlator.py": {
-    "seconds": 0.409,
-    "tests": 28
-  },
-  "tests/hermes/test_parser.py": {
-    "seconds": 0.093,
-    "tests": 12
-  },
-  "tests/hermes/test_poller.py": {
-    "seconds": 0.33,
-    "tests": 22
-  },
-  "tests/hermes/test_rules.py": {
-    "seconds": 0.39,
-    "tests": 32
-  },
-  "tests/hermes/test_sinks.py": {
-    "seconds": 0.37,
-    "tests": 39
-  },
-  "tests/hermes/test_tailer.py": {
-    "seconds": 0.685,
-    "tests": 10
-  },
   "tests/infrastructure/delivery/notifications/test_cooldown.py": {
     "seconds": 0.059,
     "tests": 5
@@ -1998,10 +1958,6 @@
   "tests/integrations/helm/test_client_factory.py": {
     "seconds": 0.014,
     "tests": 3
-  },
-  "tests/integrations/hermes/test_setup.py": {
-    "seconds": 0.165,
-    "tests": 7
   },
   "tests/integrations/honeycomb/test_client.py": {
     "seconds": 0.124,
@@ -3554,10 +3510,6 @@
   "tests/tools/test_helm_tools.py": {
     "seconds": 0.012,
     "tests": 3
-  },
-  "tests/tools/test_hermes_logs_tool.py": {
-    "seconds": 0.207,
-    "tests": 20
   },
   "tests/tools/test_honeycomb_traces_tool.py": {
     "seconds": 0.136,

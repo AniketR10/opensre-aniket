@@ -275,7 +275,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-runtime-2
             llm_provider: openai
@@ -292,7 +291,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-runtime-3
             llm_provider: openai
@@ -309,7 +307,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-runtime-4
             llm_provider: openai
@@ -326,7 +323,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-runtime-5
             llm_provider: openai
@@ -343,7 +339,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-runtime-6
             llm_provider: openai
@@ -360,7 +355,6 @@ jobs:
               tests/fleet_monitoring
               tests/analytics
               tests/sandbox
-              tests/hermes
           - os: ubuntu-latest
             shard: cli-live-agent
             # Keep all required live agent/tool-choice contracts on the

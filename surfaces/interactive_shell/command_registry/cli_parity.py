@@ -80,7 +80,7 @@ def run_cli_command(
     because most delegated commands are non-interactive printers; only commands
     that prompt on the real TTY (``onboard``, ``login``, ``uninstall``), stream
     their own progress UI (``update``), or block indefinitely (``cron start``,
-    ``hermes watch``, ``watchdog``) must pass ``capture_output=False``.
+    ``watchdog``) must pass ``capture_output=False``.
 
     **Return value:** Reports subprocess success for headless/gateway sessions
     (``session`` with no terminal facet) so slash analytics can show failure.
@@ -297,15 +297,6 @@ def _cmd_messaging(session: Session, console: Console, args: list[str]) -> bool:
     return run_cli_command(console, ["messaging", *args], session=session)
 
 
-def _cmd_hermes(session: Session, console: Console, args: list[str]) -> bool:
-    # ``hermes watch`` live-tails logs until interrupted; capturing would buffer
-    # its stream forever. Everything else (including bare ``/hermes`` help) prints.
-    capture_output = not args or args[0].lower() != "watch"
-    return run_cli_command(
-        console, ["hermes", *args], capture_output=capture_output, session=session
-    )
-
-
 def _cmd_cron(session: Session, console: Console, args: list[str]) -> bool:
     # ``cron start`` blocks as the scheduler daemon and must stream to the real
     # TTY. Every other subcommand is a printer; the captured output reaches the
@@ -411,12 +402,6 @@ COMMANDS: list[SlashCommand] = [
             "/messaging revoke",
             "/messaging status",
         ),
-    ),
-    SlashCommand(
-        "/hermes",
-        "Live-tail Hermes logs and send incidents to Telegram.",
-        _cmd_hermes,
-        usage=("/hermes watch",),
     ),
     SlashCommand(
         "/cron",

@@ -294,26 +294,6 @@ class TestDispatchSlash:
         assert "/local-llm" not in SLASH_COMMANDS
         assert "/local_llm" not in SLASH_COMMANDS
 
-    def test_hermes_slash_command_delegates_to_bare_cli(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from surfaces.interactive_shell.command_registry import cli_parity
-
-        calls: list[list[str]] = []
-
-        def _fake_run_cli_command(_console: Console, args: list[str], **kwargs: object) -> bool:
-            del kwargs
-            calls.append(args)
-            return True
-
-        monkeypatch.setattr(cli_parity, "run_cli_command", _fake_run_cli_command)
-
-        session = Session()
-        console, _ = _capture()
-
-        assert dispatch_slash("/hermes", session, console) is True
-        assert calls == [["hermes"]]
-
     def test_empty_input_is_noop(self) -> None:
         session = Session()
         console, _ = _capture()

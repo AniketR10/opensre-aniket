@@ -133,7 +133,6 @@ These commands delegate to the same Click CLI you would run outside the REPL.
 | `/cron` | Manage scheduled delivery jobs |
 | `/sentry` | Schedule automated Sentry morning digests or uptime watches (Telegram or Slack required) |
 | `/messaging` | Telegram pairing and allowlist |
-| `/hermes` | Hermes log tailing and incident escalation |
 | `/guardrails` | Sensitive-information guardrail rules |
 | `/update` | Check for updates and upgrade OpenSRE |
 | `/debug` | Targeted runtime diagnostics |
@@ -1073,16 +1072,6 @@ Telegram bot pairing and sender allowlist — required for `/watch` alarms and s
 
 </Accordion>
 
-<Accordion title="/hermes">
-
-```text
-/hermes watch
-```
-
-Tail Hermes logs and escalate classified incidents. See [Hermes](/hermes).
-
-</Accordion>
-
 <Accordion title="/guardrails">
 
 ```text
@@ -1335,5 +1324,4 @@ Continue chatting, then optionally:
 - [LLM providers](/llm-providers) — `/model` and `/effort`
 - [Agents](/fleet) — fleet dashboard, bus, trace, budgets
 - [Cron](/cron) — `/cron` scheduled deliveries
-- [Hermes](/hermes) — `/hermes watch`
 - [Sync to your own object store](/configuration/remote-sync) — `/remote-sync`
