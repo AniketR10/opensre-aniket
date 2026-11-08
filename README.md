@@ -1093,13 +1093,6 @@ Thanks goes to these amazing people:
         </a>
     </td>
             <td align="center">
-        <a href="https://github.com/CoderHariswar">
-            <img src="https://avatars.githubusercontent.com/u/113418253?v=4" width="100" alt="CoderHariswar"/>
-            <br />
-            <sub><b>CoderHariswar</b></sub>
-        </a>
-    </td>
-            <td align="center">
         <a href="https://github.com/zeesshhh0">
             <img src="https://avatars.githubusercontent.com/u/87911619?v=4" width="100" alt="zeesshhh0"/>
             <br />
@@ -1113,8 +1106,6 @@ Thanks goes to these amazing people:
             <sub><b>PrakharJain345</b></sub>
         </a>
     </td>
-		</tr>
-		<tr>
             <td align="center">
         <a href="https://github.com/Bhavarth7">
             <img src="https://avatars.githubusercontent.com/u/76651028?v=4" width="100" alt="Bhavarth7"/>
@@ -1122,6 +1113,8 @@ Thanks goes to these amazing people:
             <sub><b>Bhavarth7</b></sub>
         </a>
     </td>
+		</tr>
+		<tr>
             <td align="center">
         <a href="https://github.com/emefienem">
             <img src="https://avatars.githubusercontent.com/u/122095740?v=4" width="100" alt="emefienem"/>
